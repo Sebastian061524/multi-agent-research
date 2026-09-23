@@ -1,0 +1,20 @@
+# 密钥（不提交）
+.env
+.env.local
+
+# 生成物
+report.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# 系统
+.DS_Store
+Thumbs.db
