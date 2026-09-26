@@ -113,7 +113,13 @@ python step5_langgraph.py
 | `step1_search.py` | 嵌入模型 + 文档向量检索 | 检索 top-1 命中正确 |
 | `step2_planner.py` | 第一个 Agent（规划者） | 模型输出 3 个干净子问题 |
 | `step3_pipeline.py` | 规划 → 调研 → 撰写（普通函数版） | 完整报告生成 |
-| `step5_langgraph.py` | **改造成 LangGraph**（最终版） | 三个节点串联成图 |
+| `step5_langgraph.py` | 改造成 LangGraph | 三个节点串联成图 |
+| `step6_parallel.py` | **并行执行**（Send API + reducer） | 三个调研同时开始 |
+| `step7_review.py` | **审校 Agent**（条件回边 + 防死循环） | 不通过时自动返工 |
+| `step8_grounded.py` | **规划者感知资料库**（grounding） | 不再拆出无资料覆盖的问题 |
+| `step9_rerank.py` | **两阶段检索**（功能最全版本） | 按相关度自动取 1~5 段资料 |
+| `verify_retrieval.py` | 检索质量隔离验证 | 对比粗排 / 精排排名 |
+| `verify_adaptive.py` | 自适应取数验证 | 复合问题取 4 段、单一问题取 1 段 |
 
 保留这些文件，可以看到「一个多 Agent 系统是怎么一步步长出来的」。
 
@@ -148,6 +154,67 @@ class State(TypedDict):
 ```
 
 每个节点读取自己需要的字段、返回自己产出的字段，LangGraph 自动合并。
+
+### 两阶段检索（粗筛 + 精排）
+
+**向量检索的排序并不可靠。** 实测中，与问题无关的「Agent 的可观测性」会因为共享「Agent」一词而排到第 2 名，真正相关的 RAG 段落却排在第 4 名——只差 0.010 被 `top_k=3` 切掉。
+
+解法是工业界标准的两阶段检索：
+
+```python
+def search(query, max_k=5, min_score=0.3, coarse_k=20):
+    # ① 粗筛：向量检索宽召回（宁可多，别漏）
+    qv = model.encode(query, normalize_embeddings=True)
+    idx = (embeddings @ qv).argsort()[::-1][:coarse_k]
+    candidates = [chunks[i] for i in idx]
+
+    # ② 精排：cross-encoder 同时看「问题 + 段落」，重新打分
+    rr_scores = reranker.predict([[query, c["text"]] for c in candidates])
+
+    # ③ 自适应取数：取所有「够相关」的，最多 max_k 个
+    results = []
+    for i in rr_scores.argsort()[::-1]:
+        if rr_scores[i] < min_score:
+            break
+        results.append(candidates[i])
+        if len(results) >= max_k:
+            break
+    return results
+```
+
+三个关键设计：
+
+| 要点 | 说明 |
+|---|---|
+| **粗筛要宽** | 粗筛阶段就按 `top_k` 截断是常见 bug——精排因此失去重排空间，形同虚设 |
+| **精排治噪音** | cross-encoder 把问题和段落一起编码，能识别「共享关键词但其实无关」 |
+| **自适应取数** | 用「相关性门槛 + 上限」替代固定 `top_k`：相关几段就取几段 |
+
+实测效果（同一个问题）：
+
+```
+向量检索：  可观测性 第2 (0.622) │ RAG 第4 (0.607)      ← 噪音当道，RAG 被切掉
+重排序后：  记忆机制 0.998 │ RAG 0.759 │ 可观测性 0.020  ← 噪音被压制，RAG 保留
+```
+
+自适应取数的验证结果：
+
+| 问题 | 需要的资料量 | 实际取到 |
+|---|---|---|
+| 多Agent+记忆+RAG（复合） | 4 段 | **4 段** |
+| RAG 的典型流程（单一） | 1 段 | **1 段** |
+| 记忆与 RAG 协同 | 2 段 | **2 段** |
+
+### 审校 Agent 的判定标准
+
+审校员必须区分两类问题，否则会陷入「永远改不好」的返工：
+
+| 问题类型 | 该判 | 原因 |
+|---|---|---|
+| 结构混乱、编造内容、遗漏了资料中已有的信息 | **不通过** | 报告自身的问题，可以修复 |
+| 某子问题资料不足（报告已诚实标注） | **通过** | 资料的限制，改多少遍也没用 |
+
+同时必须有**最大迭代次数**兜底——否则审校员持续判「不通过」会导致死循环。
 
 ## 🔧 技术栈
 
