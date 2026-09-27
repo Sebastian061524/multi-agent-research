@@ -119,6 +119,7 @@ research_agent/
 ├── eval_retrieval.py          ← 第一层评测：检索层
 ├── eval_report.py             ← 第二层评测：报告层
 ├── eval_judge_calibration.py  ← 裁判校准
+├── verify_feedback.py         ← 验证审校反馈链路（返回测试）
 ├── research_docs/             ← 资料库（放你的 .txt / .md）
 ├── steps/                     ← 构建过程归档（step1 ~ step10 + 验证脚本）
 ├── docs/
@@ -149,10 +150,11 @@ research_agent/
 | `eval_retrieval.py` | **检索层评测集**（13 个用例） | 用例通过率 / 召回率 / 噪音数 |
 | `eval_report.py` | **报告层评测**（LLM 裁判） | 四维度评分 + 撰写次数 |
 | `eval_judge_calibration.py` | **裁判校准**（用坏报告测裁判） | 好报告 10 分 vs 坏报告 2~3 分 |
+| `verify_feedback.py` | **验证审校反馈链路**（mock LLM + A/B 对照） | prompt 含意见；有反馈 3/3 vs 无反馈 2/3 |
 
 保留这些文件，可以看到「一个多 Agent 系统是怎么一步步长出来的」。
 
-完整的踩坑记录与经验总结见 **[docs/多Agent项目开发实录.md](docs/多Agent项目开发实录.md)**（15 个开发步骤、20 条踩坑记录、13 条经验教训）。
+完整的踩坑记录与经验总结见 **[docs/多Agent项目开发实录.md](docs/多Agent项目开发实录.md)**（16 个开发步骤、20 条踩坑记录、15 条经验教训）。
 
 ## 🔍 关键实现
 
@@ -372,7 +374,16 @@ def search(query, max_k=5, min_score=0.3, coarse_k=20):
 python eval_retrieval.py          # 第一层：检索层（快，纯本地）
 python eval_report.py             # 第二层：报告层（慢，跑完整流程）
 python eval_judge_calibration.py  # 裁判校准（验证评测工具本身）
+python verify_feedback.py         # 验证审校反馈链路（改了撰写/审校 prompt 后跑）
 ```
+
+**关于 `verify_feedback.py`**：审校反馈只在「返工」路径上生效，而正常流程往往一次就通过——
+这条路径很容易在改动中被悄悄弄断。这个脚本用**测试替身 + A/B 对照**专门验证它：
+
+| 部分 | 成本 | 能发现什么 |
+|---|---|---|
+| ① prompt 检查（mock LLM）| 秒级、不花钱 | 「反馈链路断了」 |
+| ② A/B 对照（真实调用 2 次）| 少量费用 | 「反馈不再影响输出」 |
 
 ## 🔧 技术栈
 
