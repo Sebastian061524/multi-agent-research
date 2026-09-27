@@ -8,7 +8,7 @@
       每个主题约需 1~2 分钟。
 """
 import re
-import main as m11
+import main as m
 
 
 # ==================== 评测主题 ====================
@@ -66,7 +66,7 @@ JUDGE_PROMPT = """你是一名严格的调研报告评审专家。
 def judge_report(topic, report, materials):
     """让 LLM 当裁判，给报告打分"""
     prompt = JUDGE_PROMPT.format(topic=topic, report=report, materials=materials)
-    resp = m11.llm.invoke(prompt)
+    resp = m.llm.invoke(prompt)
     return resp.content
 
 
@@ -80,11 +80,11 @@ def parse_scores(text):
 
 
 def run_one(topic):
-    """跑一遍完整 Agent 流程，拿到报告和实际用到的资料"""
-    result = m11.graph.invoke({"topic": topic})
+    """跑一遍完整 Agent 流程，拿到报告、资料和撰写次数"""
+    result = m.graph.invoke({"topic": topic})
 
     report = result["report"]
-    revision = result.get("revision_count", 1)  # 新增
+    revision = result.get("revision_count", 1)
     materials = "\n\n".join(
         f"### 子问题：{f['question']}\n{f.get('summary', f['materials'])}"
         for f in result["findings"]
@@ -94,7 +94,7 @@ def run_one(topic):
 
 if __name__ == "__main__":
     all_scores = []
-    all_revisions = []                          # ← 新增
+    all_revisions = []
 
     for i, topic in enumerate(TOPICS, 1):
         print("\n" + "=" * 72)

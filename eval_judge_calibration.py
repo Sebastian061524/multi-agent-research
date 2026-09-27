@@ -80,7 +80,19 @@ CASES = [
 ]
 
 
+# ==================== 期望区间（校准判据）====================
+# 裁判对每份报告的指定维度打分，应当落在这个区间内，否则视为裁判不可靠
+EXPECT = {
+    "✅ 对照组：好报告":                      {"结构完整性": (8, 10), "忠实性": (8, 10)},
+    "❌ 坏报告 1：大量编造（忠实性应该低）":    {"忠实性": (0, 3), "诚实标注": (0, 4)},
+    "❌ 坏报告 2：结构混乱（结构性应该低）":    {"结构完整性": (0, 4), "覆盖度": (0, 5)},
+    "❌ 坏报告 3：内容极少（覆盖度应该低）":    {"覆盖度": (0, 4), "结构完整性": (0, 5)},
+}
+
+
 if __name__ == "__main__":
+    all_ok = True
+
     for name, report in CASES:
         print("\n" + "=" * 72)
         print(name)
@@ -93,3 +105,20 @@ if __name__ == "__main__":
         print("\n解析分数：")
         for k, v in scores.items():
             print(f"    {k}：{v}")
+
+        # ---------- 自动判定：分数是否落在期望区间 ----------
+        for dim, (lo, hi) in EXPECT.get(name, {}).items():
+            got = scores.get(dim)
+            if got is None:
+                print(f"    ⚠️  {dim}：未解析到分数（裁判输出格式可能异常）")
+                all_ok = False
+            elif not (lo <= got <= hi):
+                print(f"    ❌ {dim}：期望 {lo}~{hi}，实际 {got}")
+                all_ok = False
+
+    print("\n" + "=" * 72)
+    if all_ok:
+        print("✅ 裁判校准通过：所有维度都落在期望区间内，裁判可信")
+    else:
+        print("❌ 裁判校准未通过：请检查上面的异常项，可能需要调整裁判 prompt")
+    print("=" * 72)

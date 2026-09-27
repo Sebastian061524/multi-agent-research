@@ -73,10 +73,10 @@ def evaluate(module, config_name, **kwargs):
     n = len(CASES)
     return {
         "name": config_name,
-        "pass_rate": passed / n * 100,
+
         "passed": passed,
         "total": n,
-        "recall": (total_hit / total_expected * 100) if total_expected else 100.0,
+        "recall": (total_hit / total_expected * 100) if total_expected else 0.0,  # 无期望段落时召回率无意义
         "noise": total_noise,
         "details": details,
     }
@@ -90,7 +90,7 @@ if __name__ == "__main__":
     ]
 
     results = []
-    for name,module, kwargs in CONFIGS:
+    for name, module, kwargs in CONFIGS:
         results.append(evaluate(module, name, **kwargs))
 
     # ---------- 打印每个配置的详细结果 ----------

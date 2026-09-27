@@ -1,9 +1,8 @@
-
 import os
 import glob
 import time
 from operator import add
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 
 from langgraph.types import Send
@@ -16,7 +15,6 @@ load_dotenv()
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from langchain_openai import ChatOpenAI
@@ -38,6 +36,7 @@ llm = ChatOpenAI(
 )
 
 DOCS_DIR = "research_docs"
+print("加载嵌入模型...")
 model = SentenceTransformer("BAAI/bge-small-zh-v1.5", local_files_only=True)
 
 print("加载重排序模型...")
@@ -53,6 +52,9 @@ for pattern in [f"{DOCS_DIR}/**/*.txt", f"{DOCS_DIR}/**/*.md"]:
             para = para.strip()
             if len(para) > 20:
                 chunks.append({"source": os.path.basename(path), "text": para})
+
+if not chunks:
+    raise SystemExit(f"❌ {DOCS_DIR}/ 里没有可用资料（需要至少一段超过 20 字的文本）")
 
 embeddings = model.encode([c["text"] for c in chunks], normalize_embeddings=True)
 print(f"已索引 {len(chunks)} 个段落")
@@ -91,7 +93,7 @@ def decompose(query, max_subs=4):
     # 兜底：模型没给出有效内容时，退回原问题
     return subs[:max_subs] if subs else [query]
 
-def _retrieve(query, max_k=5,min_score=RERANK_THRESHOLD, coarse_k=20):
+def _retrieve(query, max_k=5, min_score=RERANK_THRESHOLD, coarse_k=20):
     """[单查询]两阶段检索：向量粗筛 → 重排序精排 → 自适应取数
 
     三个参数的分工：
@@ -195,19 +197,19 @@ def plan_node(state: State):
     return {"sub_questions": questions}
 
 def research_one(state: dict):
-    """调研单个字问题 会并行执行3次
+    """调研单个子问题 会并行执行3次
 
     参数不是完整的State，而是send传进来的小dict
     """
     q = state["question"]
 
     t0 = time.time()
-    print(f"   ▶ 开始调研：{q[:20]}...")  # ← 加这行
+    print(f"   ▶ 开始调研：{q[:20]}...")
 
     # 检索资料
     docs = search(q)
     print(f"   ✓ {q[:25]}... → 检索到 {len(docs)} 段资料")
-    materials = "\n\n".join(f"[{d['source']}], {d['text']}" for d in docs)
+    materials = "\n\n".join(f"[{d['source']}] {d['text']}" for d in docs)
 
     # 让模型基于资料提炼要点（这一步耗时，正是并行的价值所在）
     prompt = f"""你是一名资料分析员。请根据下面的资料回答问题。
@@ -224,7 +226,7 @@ def research_one(state: dict):
     """
 
     resp = llm.invoke(prompt)
-    print(f"   ✓ 完成：{q[:20]}... 耗时 {time.time()-t0:.1f}s")   # ← 改这行
+    print(f"   ✓ 完成：{q[:20]}... 耗时 {time.time()-t0:.1f}s")
 
     # 注意：返回的是「列表」，因为 reducer 用 add 拼接
     return {"findings": [{
@@ -241,7 +243,7 @@ def write_node(state: State):
     """③ 撰写者 Agent：整合资料写成报告"""
     # 把所有子问题的资料拼成一大段
     materials = "\n\n".join(
-        f"### 子问题：{f['question']}\n【要点】\n{f.get('summary',f['materials'])}"
+        f"### 子问题：{f['question']}\n【要点】\n{f.get('summary', f['materials'])}"
         for f in state['findings']
     )
 
@@ -264,6 +266,7 @@ def write_node(state: State):
 
 【资料】
 {materials}
+{feedback}
 """
 
     resp = llm.invoke(prompt)
@@ -338,22 +341,23 @@ def route_after_review(state: State):
         print("   → 审校未通过，返工重写 🔄")
         return "rewrite"
 
+    if "通过" not in first_line:
+        print(f"   ⚠️  审校输出格式异常（首行：{first_line[:20]}），按通过处理")
     print("   → 审校通过 ✅")
     return "end"
 
 # ==================== 组装图 ====================
 builder = StateGraph(State)
 builder.add_node("plan", plan_node)
-builder.add_node("research_one", research_one) # ← 改名
+builder.add_node("research_one", research_one)
 builder.add_node("write", write_node)
-builder.add_node("review", review_node)          # ← 新增节点
+builder.add_node("review", review_node)
 
 builder.add_edge(START, "plan")
-builder.add_conditional_edges("plan", fan_out) # ← 用 fan_out 分叉
-builder.add_edge("research_one", "write") # ← 并行分支跑完都汇聚到 write
-builder.add_edge("write", "review")              # ← 写完去审校
+builder.add_conditional_edges("plan", fan_out)
+builder.add_edge("research_one", "write")
+builder.add_edge("write", "review")
 
-# ← 关键：条件回边（形成循环）
 builder.add_conditional_edges(
     "review",
     route_after_review,
@@ -365,12 +369,12 @@ graph = builder.compile()
 if __name__ == "__main__":
     topic = input("请输入调研主题：")
 
-    result = graph.invoke({"topic": topic})   # ← 传入初始 State
+    result = graph.invoke({"topic": topic})
 
     print("\n" + "=" * 60)
     print("📄 调研报告")
     print("=" * 60)
-    print(result["report"])                    # ← 从最终 State 里取报告
+    print(result["report"])
 
     with open("report.md", "w", encoding="utf-8") as f:
         f.write(f"# {topic}\n\n{result['report']}")

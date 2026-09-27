@@ -1,15 +1,15 @@
 import os
+import glob
+
 from dotenv import load_dotenv
 load_dotenv()
 
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from sentence_transformers import SentenceTransformer
 
 model = SentenceTransformer("BAAI/bge-small-zh-v1.5", local_files_only=True)
-print("Model loaded")
-
-import glob
+print("模型加载完成")
 
 DOCS_DIR = "research_docs"
 

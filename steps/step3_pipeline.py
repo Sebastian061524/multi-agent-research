@@ -107,7 +107,7 @@ if __name__ == "__main__":
     for f in findings:
         print(f"   ✓ {f['question'][:30]}...")
 
-    # 新增：③ 撰写
+    # ③ 撰写
     report = write(topic, findings)
 
     print("\n" + "=" * 60)

@@ -58,7 +58,7 @@ print(f"已索引 {len(chunks)} 个段落")
 
 RERANK_THRESHOLD = 0.3   # 低于这个分数视为「不相关」，直接丢弃
 
-def search(query, max_k=5,min_score=RERANK_THRESHOLD, coarse_k=20):
+def search(query, max_k=5, min_score=RERANK_THRESHOLD, coarse_k=20):
     """两阶段检索：向量粗筛 → 重排序精排 → 自适应取数
 
     三个参数的分工：
@@ -143,7 +143,7 @@ def plan_node(state: State):
     return {"sub_questions": questions}
 
 def research_one(state: dict):
-    """调研单个字问题 会并行执行3次
+    """调研单个子问题 会并行执行3次
 
     参数不是完整的State，而是send传进来的小dict
     """
@@ -155,7 +155,7 @@ def research_one(state: dict):
     # 检索资料
     docs = search(q)
     print(f"   ✓ {q[:25]}... → 检索到 {len(docs)} 段资料")
-    materials = "\n\n".join(f"[{d['source']}], {d['text']}" for d in docs)
+    materials = "\n\n".join(f"[{d['source']}] {d['text']}" for d in docs)
 
     # 让模型基于资料提炼要点（这一步耗时，正是并行的价值所在）
     prompt = f"""你是一名资料分析员。请根据下面的资料回答问题。
@@ -189,7 +189,7 @@ def write_node(state: State):
     """③ 撰写者 Agent：整合资料写成报告"""
     # 把所有子问题的资料拼成一大段
     materials = "\n\n".join(
-        f"### 子问题：{f['question']}\n【要点】\n{f.get('summary',f['materials'])}"
+        f"### 子问题：{f['question']}\n【要点】\n{f.get('summary', f['materials'])}"
         for f in state['findings']
     )
 
@@ -212,6 +212,7 @@ def write_node(state: State):
 
 【资料】
 {materials}
+{feedback}
 """
 
     resp = llm.invoke(prompt)
