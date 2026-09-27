@@ -3,7 +3,8 @@
 > 记录这个项目从零到可用功能的完整过程：每一步做了什么、遇到什么问题、怎么解决的。
 >
 > 项目仓库：`multi-agent-research`
-> 最终版本：`step11_review_v2.py`
+>
+> 最终版本：`main.py`（构建过程脚本归档在 `steps/`）
 
 ---
 
@@ -2001,4 +2002,26 @@ CASES = [
 
 ---
 
-*本文档记录了项目的完整开发过程。所保留的 `step1` ~ `step11` 脚本，可以看到一个多 Agent 系统是怎么一步步长出来的。*
+## 附：项目最终结构
+
+```
+research_agent/
+├── main.py                    ← 主程序（唯一入口）
+├── eval_retrieval.py          ← 第一层评测：检索层
+├── eval_report.py             ← 第二层评测：报告层
+├── eval_judge_calibration.py  ← 裁判校准
+├── research_docs/             ← 资料库
+├── steps/                     ← 构建过程归档（step1 ~ step10 + 验证脚本）
+├── docs/
+│   └── 多Agent项目开发实录.md   ← 本文档
+├── README.md
+├── requirements.txt
+└── .env.example
+```
+
+**注**：`steps/` 里的脚本是「学习过程的快照」，按时间顺序记录系统如何一步步演进；
+`main.py` 是可直接运行的最终版本。所有脚本需**从项目根目录运行**（`research_docs/` 是相对路径）。
+
+---
+
+*本文档记录了项目的完整开发过程。`steps/` 里的 `step1` ~ `step10` 脚本，可以看到一个多 Agent 系统是怎么一步步长出来的。*

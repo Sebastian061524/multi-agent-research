@@ -72,7 +72,7 @@ DEEPSEEK_API_KEY=sk-your-key-here
 ### 4. 运行
 
 ```bash
-python step5_langgraph.py
+python main.py
 ```
 
 输入主题，例如：
@@ -82,6 +82,8 @@ python step5_langgraph.py
 ```
 
 运行完会生成 `report.md`。
+
+> **注意**：所有脚本都要**从项目根目录运行**（因为 `research_docs/` 是相对路径）。
 
 ## 📄 输出示例
 
@@ -108,29 +110,48 @@ python step5_langgraph.py
 
 **注意报告里的「资料未涵盖」**——这不是缺陷，而是**防幻觉机制生效**的证据：模型只用你给的资料，不编造。
 
+## 📁 项目结构
+
+```
+research_agent/
+├── main.py                    ← 主程序（唯一入口）
+├── eval_retrieval.py          ← 第一层评测：检索层
+├── eval_report.py             ← 第二层评测：报告层
+├── eval_judge_calibration.py  ← 裁判校准
+├── research_docs/             ← 资料库（放你的 .txt / .md）
+├── steps/                     ← 构建过程归档（step1 ~ step10 + 验证脚本）
+├── docs/
+│   └── 多Agent项目开发实录.md   ← 完整开发记录
+├── README.md
+├── requirements.txt
+└── .env.example
+```
+
 ## 📚 项目构建过程
 
-本项目按「一行行写、每步验证」的方式搭起来，保留了每一步的脚本：
+本项目按「一行行写、每步验证」的方式搭起来，`steps/` 里保留了每一步的脚本：
 
 | 文件 | 内容 | 验证点 |
 |---|---|---|
-| `step1_search.py` | 嵌入模型 + 文档向量检索 | 检索 top-1 命中正确 |
-| `step2_planner.py` | 第一个 Agent（规划者） | 模型输出 3 个干净子问题 |
-| `step3_pipeline.py` | 规划 → 调研 → 撰写（普通函数版） | 完整报告生成 |
-| `step5_langgraph.py` | 改造成 LangGraph | 三个节点串联成图 |
-| `step6_parallel.py` | **并行执行**（Send API + reducer） | 三个调研同时开始 |
-| `step7_review.py` | **审校 Agent**（条件回边 + 防死循环） | 不通过时自动返工 |
-| `step8_grounded.py` | **规划者感知资料库**（grounding） | 不再拆出无资料覆盖的问题 |
-| `step9_rerank.py` | **两阶段检索**（粗筛 + 重排 + 自适应取数） | 按相关度自动取 1~5 段资料 |
-| `step10_decompose.py` | **查询分解**（多查询检索） | 复合问题用例 13/13 通过 |
-| `step11_review_v2.py` | **审校规则修正**（功能最全版本） | 审校一次通过率 1/3 → 3/3 |
-| `verify_retrieval.py` | 检索质量隔离验证 | 对比粗排 / 精排排名 |
-| `verify_adaptive.py` | 自适应取数验证 | 复合问题取 4 段、单一问题取 1 段 |
+| `steps/step1_search.py` | 嵌入模型 + 文档向量检索 | 检索 top-1 命中正确 |
+| `steps/step2_planner.py` | 第一个 Agent（规划者） | 模型输出 3 个干净子问题 |
+| `steps/step3_pipeline.py` | 规划 → 调研 → 撰写（普通函数版） | 完整报告生成 |
+| `steps/step5_langgraph.py` | 改造成 LangGraph | 三个节点串联成图 |
+| `steps/step6_parallel.py` | **并行执行**（Send API + reducer） | 三个调研同时开始 |
+| `steps/step7_review.py` | **审校 Agent**（条件回边 + 防死循环） | 不通过时自动返工 |
+| `steps/step8_grounded.py` | **规划者感知资料库**（grounding） | 不再拆出无资料覆盖的问题 |
+| `steps/step9_rerank.py` | **两阶段检索**（粗筛 + 重排 + 自适应取数） | 按相关度自动取 1~5 段资料 |
+| `steps/step10_decompose.py` | **查询分解**（多查询检索） | 复合问题用例 13/13 通过 |
+| `main.py` | **审校规则修正**（= 最终版本） | 审校一次通过率 1/3 → 3/3 |
+| `steps/verify_retrieval.py` | 检索质量隔离验证 | 对比粗排 / 精排排名 |
+| `steps/verify_adaptive.py` | 自适应取数验证 | 复合问题取 4 段、单一问题取 1 段 |
 | `eval_retrieval.py` | **检索层评测集**（13 个用例） | 用例通过率 / 召回率 / 噪音数 |
 | `eval_report.py` | **报告层评测**（LLM 裁判） | 四维度评分 + 撰写次数 |
 | `eval_judge_calibration.py` | **裁判校准**（用坏报告测裁判） | 好报告 10 分 vs 坏报告 2~3 分 |
 
 保留这些文件，可以看到「一个多 Agent 系统是怎么一步步长出来的」。
+
+完整的踩坑记录与经验总结见 **[docs/多Agent项目开发实录.md](docs/多Agent项目开发实录.md)**（13 个开发步骤、16 条踩坑记录、10 条经验教训）。
 
 ## 🔍 关键实现
 

@@ -8,7 +8,7 @@
       每个主题约需 1~2 分钟。
 """
 import re
-import step11_review_v2 as m11
+import main as m11
 
 
 # ==================== 评测主题 ====================

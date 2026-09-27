@@ -4,8 +4,8 @@
   单点验证会骗人 —— 这次开发中，只看一个 case 就以为修好了，
   结果另一个 case 反而变差。只有评测集能系统性地发现回归。
 """
-import step9_rerank as m9
-import step10_decompose as m10
+from steps import step9_rerank as m9
+from steps import step10_decompose as m10
 
 # ==================== 评测集 ====================
 # 每个用例：一个问题 + 「应该被检索到」的段落标题（标准答案）
