@@ -10,7 +10,11 @@ from langgraph.types import Send
 from dotenv import load_dotenv
 
 
-load_dotenv()
+# 项目根目录（本文件所在目录）——后续所有路径都基于它，不依赖当前工作目录
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 显式指定 .env 位置，避免因工作目录不同而找不到
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -35,7 +39,8 @@ llm = ChatOpenAI(
     base_url="https://api.deepseek.com",
 )
 
-DOCS_DIR = "research_docs"
+DOCS_DIR = os.path.join(BASE_DIR, "research_docs")
+
 print("加载嵌入模型...")
 model = SentenceTransformer("BAAI/bge-small-zh-v1.5", local_files_only=True)
 
@@ -54,7 +59,7 @@ for pattern in [f"{DOCS_DIR}/**/*.txt", f"{DOCS_DIR}/**/*.md"]:
                 chunks.append({"source": os.path.basename(path), "text": para})
 
 if not chunks:
-    raise SystemExit(f"❌ {DOCS_DIR}/ 里没有可用资料（需要至少一段超过 20 字的文本）")
+    raise SystemExit(f"❌ 在 {DOCS_DIR} 里没有找到可用资料（需要至少一段超过 20 字的文本）")
 
 embeddings = model.encode([c["text"] for c in chunks], normalize_embeddings=True)
 print(f"已索引 {len(chunks)} 个段落")
@@ -376,6 +381,6 @@ if __name__ == "__main__":
     print("=" * 60)
     print(result["report"])
 
-    with open("report.md", "w", encoding="utf-8") as f:
+    with open(os.path.join(BASE_DIR, "report.md"), "w", encoding="utf-8") as f:
         f.write(f"# {topic}\n\n{result['report']}")
     print("\n✅ 报告已保存到 report.md")

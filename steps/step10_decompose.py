@@ -42,7 +42,8 @@ llm = ChatOpenAI(
     base_url="https://api.deepseek.com",
 )
 
-DOCS_DIR = "research_docs"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DOCS_DIR = os.path.join(BASE_DIR, "research_docs")
 model = SentenceTransformer("BAAI/bge-small-zh-v1.5", local_files_only=True)
 
 print("加载重排序模型...")
@@ -58,6 +59,9 @@ for pattern in [f"{DOCS_DIR}/**/*.txt", f"{DOCS_DIR}/**/*.md"]:
             para = para.strip()
             if len(para) > 20:
                 chunks.append({"source": os.path.basename(path), "text": para})
+
+if not chunks:
+    raise SystemExit(f"❌ 在 {DOCS_DIR} 里没有找到可用资料（需要至少一段超过 20 字的文本）")
 
 embeddings = model.encode([c["text"] for c in chunks], normalize_embeddings=True)
 print(f"已索引 {len(chunks)} 个段落")
@@ -355,6 +359,6 @@ if __name__ == "__main__":
     print("=" * 60)
     print(result["report"])                    # ← 从最终 State 里取报告
 
-    with open("report.md", "w", encoding="utf-8") as f:
+    with open(os.path.join(BASE_DIR, "report.md"), "w", encoding="utf-8") as f:
         f.write(f"# {topic}\n\n{result['report']}")
     print("\n✅ 报告已保存到 report.md")

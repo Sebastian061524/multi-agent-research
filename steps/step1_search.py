@@ -11,7 +11,8 @@ from sentence_transformers import SentenceTransformer
 model = SentenceTransformer("BAAI/bge-small-zh-v1.5", local_files_only=True)
 print("模型加载完成")
 
-DOCS_DIR = "research_docs"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DOCS_DIR = os.path.join(BASE_DIR, "research_docs")
 
 chunks = []
 for pattern in [f"{DOCS_DIR}/**/*.txt", f"{DOCS_DIR}/**/*.md"]:
@@ -26,6 +27,9 @@ for pattern in [f"{DOCS_DIR}/**/*.txt", f"{DOCS_DIR}/**/*.md"]:
 print(f"加载了 {len(chunks)} 个段落")
 for c in chunks:
     print("   -", c["text"][:35].replace("\n", " "), "...")
+
+if not chunks:
+    raise SystemExit(f"❌ 在 {DOCS_DIR} 里没有找到可用资料（需要至少一段超过 20 字的文本）")
 
 embeddings = model.encode([c["text"] for c in chunks], normalize_embeddings=True)
 print(f"\n向量化完成，形状：{embeddings.shape}")
