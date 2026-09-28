@@ -53,7 +53,7 @@ def check_prompt():
     print("=" * 72)
     print("① 检查发往 LLM 的 prompt 是否包含审校意见（mock LLM，无 API 调用）")
     print("=" * 72)
-
+    # ② 把真的 LLM 换成假的（避免真的花钱调 API） # 用来存下 prompt
     captured = {}
 
     class FakeResponse:
@@ -61,12 +61,13 @@ def check_prompt():
 
     class FakeLLM:
         def invoke(self, prompt):
-            captured["prompt"] = prompt
+            captured["prompt"] = prompt   # 不真调用，只把 prompt 存下来
             return FakeResponse()
 
     real_llm = main.llm          # 保存真实 LLM
     main.llm = FakeLLM()         # 替换成假的
     try:
+        # ① 造一个假的 State —— 关键是带上 review
         state = {
             "topic": TOPIC,
             "sub_questions": ["ReAct 架构的原理是什么"],
@@ -80,7 +81,7 @@ def check_prompt():
         main.llm = real_llm      # 无论成败都还原
 
     prompt = captured.get("prompt", "")
-
+    # ③ 检查存下来的 prompt 里，有没有那句话
     checks = [
         ("审校意见引导语", "上一版的审校意见"),
         ("意见第 1 条", "报告没有「## 结论」部分"),
