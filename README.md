@@ -116,6 +116,8 @@ python main.py
 ```
 research_agent/
 ├── main.py                    ← 主程序（唯一入口）
+├── mcp_server.py              ← 【MCP】知识库服务（Tools + Resources + Prompts）
+├── mcp_demo.py                ← 【MCP】三原语验证器 + Agent 接入演示
 ├── eval_retrieval.py          ← 第一层评测：检索层
 ├── eval_report.py             ← 第二层评测：报告层
 ├── eval_judge_calibration.py  ← 裁判校准
@@ -123,7 +125,8 @@ research_agent/
 ├── research_docs/             ← 资料库（放你的 .txt / .md）
 ├── steps/                     ← 构建过程归档（step1 ~ step10 + 验证脚本）
 ├── docs/
-│   └── 多Agent项目开发实录.md   ← 完整开发记录
+│   ├── 多Agent项目开发实录.md   ← 多 Agent 项目开发记录
+│   └── MCP开发实录.md          ← MCP 封装开发记录
 ├── README.md
 ├── requirements.txt
 └── .env.example
@@ -155,6 +158,8 @@ research_agent/
 保留这些文件，可以看到「一个多 Agent 系统是怎么一步步长出来的」。
 
 完整的踩坑记录与经验总结见 **[docs/多Agent项目开发实录.md](docs/多Agent项目开发实录.md)**（16 个开发步骤、20 条踩坑记录、15 条经验教训）。
+
+把检索能力封装成标准 MCP Server 的过程见 **[docs/MCP开发实录.md](docs/MCP开发实录.md)**（9 个开发步骤、11 条踩坑记录、10 条经验教训）。
 
 ## 🔍 关键实现
 
@@ -385,12 +390,42 @@ python verify_feedback.py         # 验证审校反馈链路（改了撰写/审�
 | ① prompt 检查（mock LLM）| 秒级、不花钱 | 「反馈链路断了」 |
 | ② A/B 对照（真实调用 2 次）| 少量费用 | 「反馈不再影响输出」 |
 
+## 🔌 MCP 服务（把检索能力开放出去）
+
+`mcp_server.py` 把本项目的检索能力封装成**标准 MCP Server**——任何支持 MCP 的客户端都能接入
+（Claude Desktop / Cursor / 其他 Agent），而且**检索代码零重复**（直接复用 `main.py` 里的 `search()`）。
+
+| 原语 | 提供 | 谁控制 |
+|---|---|---|
+| **Tools** | `search_knowledge(query, max_results, smart_query)`<br>`list_knowledge_sources()` | 模型 |
+| **Resources** | `data://kb/overview`（概览）<br>`data://kb/chunk/{index}`（按需读片段）| 应用 |
+| **Prompts** | `research_report(topic)`（一键生成调研请求）| 用户 |
+
+**验证方式**（内存内连接，不用起服务、不用管端口）：
+
+```powershell
+python mcp_demo.py
+```
+
+它会依次验证三原语，然后把 Server 接进 LangChain Agent，观察**模型自主检索**。
+
+**设计要点**：
+
+- **`smart_query` 默认关闭**——模型自己会拆查询，Server 不再重复拆（避免「双重分解」浪费 LLM 调用）
+- **空结果不"硬凑"**——返回 `count / docs / note`，说清**为什么没结果 + 下一步建议**
+  （实测数据表明：靠分数无法区分「措辞不匹配」和「资料确实没有」，所以兜底方案不成立）
+- **工具 docstring 即行为指令**——「一次只问一个概念」「不要编造」直接写进 schema，
+  实测让模型的查询从「带修饰的复合描述」变成「一个概念一个查询」
+
+开发过程（9 个步骤、11 条踩坑记录）见 **[docs/MCP开发实录.md](docs/MCP开发实录.md)**。
+
 ## 🔧 技术栈
 
 - **编排**：LangGraph
 - **大模型**：DeepSeek（deepseek-chat）
 - **嵌入模型**：BAAI/bge-small-zh-v1.5（本地运行，512 维）
 - **检索**：向量检索（NumPy 矩阵运算实现）
+- **MCP**：FastMCP 4（服务端）+ `langchain[mcp]` 的 `MCPAdapter`（客户端）
 
 ## 📈 可扩展方向
 
