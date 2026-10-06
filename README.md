@@ -117,6 +117,7 @@ python main.py
 research_agent/
 ├── main.py                    ← 主程序（唯一入口）
 ├── mcp_server.py              ← 【MCP】知识库服务（Tools + Resources + Prompts）
+├── mcp_server_stdio.py        ← 【MCP】stdio 入口（给桌面客户端用）
 ├── mcp_demo.py                ← 【MCP】三原语验证器 + Agent 接入演示
 ├── eval_retrieval.py          ← 第一层评测：检索层
 ├── eval_report.py             ← 第二层评测：报告层
@@ -398,7 +399,7 @@ python verify_feedback.py         # 验证审校反馈链路（改了撰写/审�
 | 原语 | 提供 | 谁控制 |
 |---|---|---|
 | **Tools** | `search_knowledge(query, max_results, smart_query)`<br>`list_knowledge_sources()` | 模型 |
-| **Resources** | `data://kb/overview`（概览）<br>`data://kb/chunk/{index}`（按需读片段）| 应用 |
+| **Resources** | `data://kb/overview`（概览）<br>`data://kb/toc`（目录：每篇包含哪些片段）<br>`data://kb/chunk/{index}`（按需读片段）| 应用 |
 | **Prompts** | `research_report(topic)`（一键生成调研请求）| 用户 |
 
 **验证方式**（内存内连接，不用起服务、不用管端口）：
@@ -416,8 +417,14 @@ python mcp_demo.py
   （实测数据表明：靠分数无法区分「措辞不匹配」和「资料确实没有」，所以兜底方案不成立）
 - **工具 docstring 即行为指令**——「一次只问一个概念」「不要编造」直接写进 schema，
   实测让模型的查询从「带修饰的复合描述」变成「一个概念一个查询」
+- **接口设计要听真实使用的反馈**——在 Cursor 里问「知识库里有什么资料」，观察工具调用序列
+  发现有 **8 次操作（6 次检索）且漏了一个主题**；补一个 `data://kb/toc` 目录资源后
+  降到 **2 次操作（0 次检索）**，答案也完整了
 
-开发过程（9 个步骤、11 条踩坑记录）见 **[docs/MCP开发实录.md](docs/MCP开发实录.md)**。
+**接入桌面客户端**：`mcp_server_stdio.py` 是 stdio 入口（**不改 `mcp_server.py`**），
+在 Cursor 的 `~/.cursor/mcp.json` 里配置即可——已实测在 Cursor 3.4.20 中可用。
+
+开发过程（11 个步骤、15 条踩坑记录）见 **[docs/MCP开发实录.md](docs/MCP开发实录.md)**。
 
 ## 🔧 技术栈
 

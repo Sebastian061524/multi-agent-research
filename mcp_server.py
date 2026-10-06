@@ -59,9 +59,11 @@ def search_knowledge(query: str, max_results: int = 5, smart_query: bool = False
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 def list_knowledge_sources() -> list[str]:
-    """列出知识库里都有哪几篇资料（只有文件名 不含内容）
+    """列出知识库里都有哪几篇资料（只有文件名，不含内容）。
 
-     用途：想先了解「这个知识库能回答哪些方面的问题」时调用。
+    用途：想先了解「这个知识库能回答哪些方面的问题」时调用。
+    注意：本工具只返回文件名。想看每篇涵盖哪些主题，
+          请读取资源 data://kb/toc。
     """
     return sorted({c["source"] for c in research.chunks})
 
@@ -99,6 +101,15 @@ def get_chunk(index: int) -> str:
         {"index": index, "source": c["source"], "text": c["text"]},
         ensure_ascii=False,
     )
+
+@mcp.resource("data://kb/toc")
+def get_kb_toc() -> str:
+    """知识库目录：每篇资料包含哪些片段（下标 + 标题）。"""
+    toc = {}
+    for i, c in enumerate(research.chunks):
+        title = c["text"].splitlines()[0].strip()
+        toc.setdefault(c["source"], []).append({"index": i, "title": title})
+    return json.dumps(toc, ensure_ascii=False, indent=2)
 
 @mcp.prompt
 def research_report(topic: str) -> str:

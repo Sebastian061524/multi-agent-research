@@ -5,7 +5,10 @@
 >
 > 项目仓库：`multi-agent-research`
 >
-> 最终交付：`mcp_server.py`（121 行）+ `mcp_demo.py`（验证器，158 行）
+> 最终交付：`mcp_server.py`（132 行）+ `mcp_server_stdio.py`（stdio 入口）
+> + `mcp_demo.py`（验证器，158 行）
+>
+> 已在 **Cursor 3.4.20** 中接入并真实使用（含一次由真实使用反馈驱动的接口改进）
 
 ---
 
@@ -13,7 +16,7 @@
 
 - [一、项目概览](#一项目概览)
 - [二、背景知识：MCP 是什么](#二背景知识mcp-是什么)
-- [三、开发过程（9 个步骤）](#三开发过程9-个步骤)
+- [三、开发过程（11 个步骤）](#三开发过程11-个步骤)
 - [四、关键问题专题](#四关键问题专题)
 - [五、踩坑总结表](#五踩坑总结表)
 - [六、经验教训](#六经验教训)
@@ -50,6 +53,7 @@ MCP Server（三原语齐全）
 | **Tool** | `list_knowledge_sources()` | 模型 | 列出知识库有哪些资料 |
 | **Resource** | `data://kb/overview` | 应用 | 知识库概览（篇数/段数/明细）|
 | **Resource** | `data://kb/chunk/{index}` | 应用 | 按下标读原始片段（资源模板）|
+| **Resource** | `data://kb/toc` | 应用 | **知识库目录**：每篇包含哪些片段（下标 + 标题）|
 | **Prompt** | `research_report(topic)` | 用户 | 一键生成「调研某主题」的请求 |
 
 ### 技术栈
@@ -58,7 +62,7 @@ MCP Server（三原语齐全）
 |---|---|
 | MCP 框架 | FastMCP 4.0.10 |
 | MCP 协议 | 2026-07-28 版本 |
-| 客户端（验证用）| `fastmcp.Client`（内存内）+ `langchain.mcp.MCPAdapter` |
+| 客户端（验证用）| `fastmcp.Client`（内存内）+ `langchain.mcp.MCPAdapter` + **Cursor 3.4.20（真实客户端）** |
 | 复用来源 | `main.py`（`research.search()` / `research.chunks` / `research.llm`）|
 | 传输 | 开发时 `stdio`/内存内，调试时 `http`（端口 8001）|
 
@@ -67,7 +71,8 @@ MCP Server（三原语齐全）
 ```
 research_agent/
 ├── main.py            ← 多 Agent 调研报告（原有，未改动）
-├── mcp_server.py      ← 【新增】MCP 知识库服务
+├── mcp_server.py      ← 【新增】MCP 知识库服务（定义：工具/资源/提示）
+├── mcp_server_stdio.py ← 【新增】stdio 入口（给桌面客户端用）
 ├── mcp_demo.py        ← 【新增】三原语验证器 + Agent 接入演示
 ├── eval_retrieval.py  ← 检索层评测（原有）
 ├── eval_report.py     ← 报告层评测（原有）
@@ -77,7 +82,8 @@ research_agent/
 ```
 
 **复用方式**：`mcp_server.py` 里 `import main as research`，直接用它的检索函数与数据。
-**零重复代码**，代价是启动时会连带加载嵌入/重排序模型（约 15 秒）。
+**零重复代码**，代价是启动时会连带加载嵌入/重排序模型（实测约 **28 秒**，其中光
+`import sentence_transformers` 就要 20 秒——它会连带导入 `torch`、`transformers`）。
 
 ---
 
@@ -157,7 +163,7 @@ research_agent/
 
 ---
 
-## 三、开发过程（9 个步骤）
+## 三、开发过程（11 个步骤）
 
 ### 步骤 1：搭 Server 空壳 + 一个测试工具
 
@@ -1339,6 +1345,328 @@ smart_query 对比
 
 ---
 
+### 步骤 10：切到 stdio + 接入真实客户端（Cursor）
+
+#### 做了什么
+
+1. **新建** `mcp_server_stdio.py`（stdio 入口）——**`mcp_server.py` 一行都不改**
+2. 修掉 `import main` 带来的 print 污染
+3. 写进 Cursor 的 `mcp.json`，**真实使用**
+
+#### 为什么
+
+```
+前面 9 步都在【内存内 / HTTP】里测
+        ↓
+Server 只有你自己在调
+        ↓
+接上真实客户端，才能验证「MCP 的价值」
+        ↓
+而且会暴露内存内测试【永远遇不到】的问题
+```
+
+#### 怎么做
+
+##### ① 不改原文件：加一个 stdio 入口
+
+**`mcp_server_stdio.py`**：
+
+```python
+import contextlib
+import sys
+
+# ⚠️ stdio 模式下 stdout 是【协议通道】，任何 print 都会污染它。
+#    mcp_server 在 import 时会 import main，而 main 在模块级有 3 处 print。
+with contextlib.redirect_stdout(sys.stderr):
+    from mcp_server import mcp
+
+
+if __name__ == "__main__":
+    mcp.run()          # 默认传输就是 stdio
+```
+
+**原理**：`import mcp_server` **不会**执行它的 `if __name__ == "__main__":` 块，
+所以拿到的是**已经完全配置好的 `mcp` 对象**（工具/资源/提示都在）。
+
+**架构意义：定义与入口分离**
+
+```
+mcp_server.py          → 只负责【定义】+ HTTP 入口（调试用）
+mcp_server_stdio.py    → 只负责【以 stdio 方式启动】（客户端用）
+```
+
+> 同一个 Server 定义，可以有多个入口。**这也是 MCP 社区推荐的写法。**
+
+##### ② 修 print 污染（关键）
+
+`main.py` 在模块级有 3 处 `print`（第 44/47/65 行）：
+
+```python
+print("加载嵌入模型...")
+print("加载重排序模型...")
+print(f"已索引 {len(chunks)} 个段落")
+```
+
+**实测证据**——直接捕获 stdio 子进程的原始 stdout：
+
+```
+=== 原始捕获 bad_server.py 的 stdout（stdio 协议通道）===
+'加载嵌入模型...\r\n'          ← print 确实写进了协议通道 ❌
+```
+
+**修法**：`contextlib.redirect_stdout(sys.stderr)` 把 import 期间的 stdout 改道到 stderr。
+
+```
+stdout → 协议通道（JSON-RPC）  ← 只能写协议消息
+stderr → 日志通道              ← 客户端会转发给用户看
+```
+
+**为什么不用改 `main.py`**：
+
+```
+改 main.py   → 影响调研 Agent 的正常运行（那些 print 是给人看的进度）
+用 redirect  → 【零侵入】，只在本 Server 生效 ✅
+```
+
+**修完后验证**：
+
+```
+② 原始 stdout 捕获（验证 print 污染是否修掉）
+  stdout 内容（前 300 字符）：''            ← 完全空
+  ✅ stdout 干净（没有任何 print 污染）
+```
+
+##### ③ 写客户端配置
+
+**`C:\Users\<用户名>\.cursor\mcp.json`**：
+
+```json
+{
+  "mcpServers": {
+    "knowledge-base": {
+      "command": "D:\\PythonCode\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\PythonCode\\research_agent\\mcp_server_stdio.py"]
+    }
+  }
+}
+```
+
+**三个易错点**：
+
+| 坑 | 说明 |
+|---|---|
+| **路径用双反斜杠** | JSON 里 `\` 是转义符 |
+| **用 venv 的 python** | 依赖装在 venv 里，不是系统 python |
+| **指向 `_stdio.py`** | 不是 `mcp_server.py`（那个默认起 HTTP）|
+
+#### 验证
+
+```
+① stdio 连接成功
+   连接耗时：48.2 秒                     ← ⚠️ 见下面的问题
+   工具  ：['ping', 'search_knowledge', 'list_knowledge_sources']
+   资源  ：['data://kb/overview']
+   提示  ：['research_report']
+   调用 search_knowledge → count = 2
+
+② stdout 内容：''
+   ✅ stdout 干净（没有任何 print 污染）
+```
+
+**接入 Cursor 后的实际使用**（问「我的知识库里有什么资料？」）：
+
+```
+Ran List Knowledge Sources in knowledge-base      ← Tool ✅
+Read overview                                     ← Resource ✅（LangChain 用不了，Cursor 能用）
+Ran Search Knowledge in knowledge-base  ×6        ← ⚠️ 见步骤 11
+```
+
+#### ⚠️ 遇到的问题（3 个）
+
+**问题 1：print 污染协议通道**
+
+见上面的实测证据。**而且 FastMCP 客户端居然容忍了它**（会跳过无法解析为 JSON 的行），
+所以**一开始没报错**：
+
+```
+事实：print 确实写进了协议通道 ❌
+现状：FastMCP 客户端容错 → 所以"碰巧能用"
+风险：Claude Desktop / Cursor / 别的实现【不一定这么宽容】
+```
+
+> **又是「碰巧能用」**——和 `sympy` 的 `false`（`bool()` 返回 False 所以没坏）、
+> `len(dict)`（恰好等于 3 所以看起来对）是同一类。
+
+**问题 2：启动慢**
+
+分解测量（各跑 2 次）：
+
+```
+① 只 import sentence_transformers      : 19.7s / 20.4s
+② 加载嵌入+重排序模型（import main）    : 27.9s / 29.0s
+③ 只 import fastmcp + 起 stdio          :  1.8s /  2.0s
+```
+
+**根因**：`sentence_transformers` 会连带导入 `torch`、`transformers`——**光 import 就 20 秒**。
+
+| 方案 | 启动 | 首次工具调用 | 客户端体验 |
+|---|---|---|---|
+| **立即加载**（当前）| 28~48 秒 | 快 | 可能被判启动超时 |
+| **延迟加载** | <1 秒 | +28 秒 | 启动必过，首次调用慢 |
+
+**实测结果**：Cursor **能接受** 28 秒左右的启动（没有超时），所以暂时不改。
+如果以后遇到超时，就把 `import main` 挪进函数做延迟加载。
+
+**问题 3：改了代码但没生效**
+
+```
+在 mcp_server.py 里加了 data://kb/toc
+        ↓
+在 Cursor 里重问 → 还是旧行为 ❌
+        ↓
+根因：MCP Server 是【常驻子进程】
+      Cursor 启动时拉起它，之后一直用同一个进程
+      改文件 ≠ 改运行中的程序，Python 不会热重载
+        ↓
+修法：在 Cursor 设置里重启该 MCP Server（或彻底重启 Cursor）
+      重启后还要等约 30 秒加载模型才变绿
+```
+
+**诊断手段**（看 python 进程的启动时间）：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Select-Object ProcessId, CreationDate, CommandLine
+```
+
+**进程启动时间早于你改文件的时间 → 就是它在用旧代码。**
+
+> **这是 MCP 开发的一个固有痛点**：每次改 Server 都要重启客户端里的 Server。
+> 所以正确的调试策略是：**内存内快速验证逻辑 → 再重启客户端验证真实行为**。
+
+---
+
+### 步骤 11：由真实使用反馈驱动的接口改进 ⭐
+
+#### 做了什么
+
+加一个 Resource：`data://kb/toc`（知识库目录）。
+
+#### 为什么：观察到的一个真实缺陷
+
+在 Cursor 里问了一个**最自然的问题**：
+
+```
+我的知识库里有什么资料？
+```
+
+**观察到的工具调用序列**：
+
+```
+[1] Ran List Knowledge Sources in knowledge-base     ← Tool
+    Read overview                                     ← Resource
+    Thought for 3s
+[2] Ran Search Knowledge in knowledge-base            ← 检索 1
+    Thought briefly
+[3] Ran Search Knowledge in knowledge-base            ← 检索 2
+[4] Ran Search Knowledge in knowledge-base            ← 检索 3
+[5] Ran Search Knowledge in knowledge-base            ← 检索 4
+    Thought briefly
+[6] Ran Search Knowledge in knowledge-base            ← 检索 5
+[7] Ran Search Knowledge in knowledge-base            ← 检索 6
+```
+
+**8 次 MCP 操作，其中 6 次是检索——而且答案还漏了一个主题（RAG）。**
+
+**根因分析**：
+
+| 现有接口 | 能回答什么 | 缺口 |
+|---|---|---|
+| `list_knowledge_sources()` | 「有哪几**篇**资料」| ❌ 不知道每篇讲什么 |
+| `data://kb/overview` | 「有几篇/几段」| ❌ 只有数字 |
+| `data://kb/chunk/{index}` | 「第 i 段是什么」| ⚠️ 得知道下标、逐段读 |
+| `search_knowledge(query)` | 「某主题的资料」| ⚠️ 得先知道问什么 |
+
+**没有任何一个能一次告诉你「知识库涵盖哪些主题」** → 模型只能反复检索去猜。
+
+#### 怎么做
+
+**加一个 Resource（「目录」是一种资料：只读、结构化，符合 Resource 的定位）**：
+
+```python
+@mcp.resource("data://kb/toc")
+def get_kb_toc() -> str:
+    """知识库目录：每篇资料包含哪些片段（下标 + 标题）。"""
+    toc = {}
+    for i, c in enumerate(research.chunks):
+        title = c["text"].splitlines()[0].strip()
+        toc.setdefault(c["source"], []).append({"index": i, "title": title})
+    return json.dumps(toc, ensure_ascii=False, indent=2)
+```
+
+**同时更新 `list_knowledge_sources` 的 docstring**，把模型引导到正确的接口：
+
+```python
+    用途：想先了解「这个知识库能回答哪些方面的问题」时调用。
+    注意：本工具只返回文件名。想看每篇涵盖哪些主题，
+          请读取资源 data://kb/toc。
+```
+
+#### 验证：同一个问题，改前 vs 改后
+
+```
+改前：8 次 MCP 操作（6 次检索） + 漏了一个主题
+改后：
+    Explored available tools
+    ⚙ List knowledge base source filenames     ← Tool：1 次
+    Read resource toc                           ← Resource：1 次
+    Thought briefly
+
+    知识库目前只有 1 篇资料：sample_ai_agents.txt，主题是 AI Agent。目录里有这 7 个小节：
+      1. ReAct 架构
+      2. Plan-and-Execute 架构
+      3. 多 Agent 协作
+      4. RAG 检索增强生成            ← 这次没漏
+      5. Agent 的记忆机制
+      6. Agent 的可观测性
+      7. Agent 的评测方法
+
+    如果你想了解某一节的具体内容，直接说主题即可，我可以从知识库里检索原文再给你讲。
+```
+
+| 指标 | 改前 | 改后 | 改善 |
+|---|---|---|---|
+| **MCP 操作总数** | 8 次 | **2 次** | ↓ 75% |
+| **检索调用** | 6 次 | **0 次** | ↓ 100% |
+| 答案完整性 | 漏 RAG | **7/7 全** | ✅ |
+| 耗时 | 多轮 | **6 秒** | ✅ |
+
+#### ⭐ 这次改动的真正价值
+
+**连模型的回复质量都变了**：
+
+```
+改前：只给清单，结束
+改后：「如果你想了解某一节的具体内容，直接说主题即可，我可以从知识库里检索原文再给你讲。」
+        ↑ 主动提供下一步
+```
+
+**因为信息完整了，它就"知道自己手里有什么"，于是敢于承诺。**
+
+> **信息完整 → 行为自信。** 这是数据质量对模型行为的直接影响。
+
+**而且这个缺陷，在内存内测试时永远发现不了**：
+
+```
+内存内手动测试 → 你自己知道该调哪个工具 → 测不出问题
+        ↓
+交给一个真的在想「怎么回答用户」的 Agent
+        ↓
+它的行为序列会告诉你：你的接口设计哪里不好
+```
+
+---
+
 ## 四、关键问题专题
 
 ### 专题 1：docstring 决定模型怎么用工具
@@ -1516,6 +1844,71 @@ smart_query=False        + 没有 docstring  =  埋了个坑 ❌
 
 ---
 
+### 专题 7：工具设计要听「真实使用」的反馈 ⭐
+
+**核心结论**：
+
+> **不要凭「我觉得模型会怎么用」来设计接口——要去看它实际怎么用。**
+
+**本项目的实证**：
+
+```
+内存内 / HTTP 测试（前 9 步）
+   → 一切正常，工具都能调通
+   → 但【测不出接口设计好不好】，因为你自己知道该调哪个工具
+        ↓
+交给 Cursor 里的 Agent，问一个最自然的问题
+   → 立刻暴露：8 次操作、6 次检索、答案还漏了一块
+        ↓
+加一个 8 行的 Resource
+   → 8 次 → 2 次，答案 7/7 全
+```
+
+**为什么内存内测试发现不了**：
+
+| 测试方式 | 谁决定下一步 | 能否发现接口缺陷 |
+|---|---|---|
+| 内存内手动调 | **你**（你知道该调什么）| ❌ 不能 |
+| 真实客户端的 Agent | **模型**（它要自己想办法）| ✅ 能 |
+
+> **凡是「人代替模型」做的测试，都会漏掉模型真实使用时的行为。**
+> 这和主项目里「评测要用真实用例」是同一个道理。
+
+**什么样的信号说明接口有问题**：
+
+| 信号 | 含义 |
+|---|---|
+| **操作次数远超预期** | 缺少一个能一次拿全的接口 |
+| **模型在反复试不同关键词** | 它在"猜"，说明没有权威入口 |
+| **同样的信息被多次获取** | 接口粒度不对 |
+| **答案不完整** | 缺少"目录/概览"类接口 |
+| **回复措辞不确定**（"检索到的内容覆盖…"）| 模型手里没有完整信息 |
+
+**做法**：
+
+```
+① 在真实客户端里，用【最自然的方式】问最基础的问题
+        ↓
+② 展开工具调用序列，数操作次数
+        ↓
+③ 问自己：「这个操作数是必要的吗？本可以几次搞定？」
+        ↓
+④ 补上缺失的接口
+        ↓
+⑤ 用【同一个问题】再问一次，对比次数
+```
+
+**而验证方式必须可量化**：
+
+```
+改前：8 次操作（6 次检索）+ 漏 1 个主题
+改后：2 次操作（0 次检索）+ 7/7 全
+        ↑
+【数字对比才有说服力，"感觉好多了"不算】
+```
+
+---
+
 ## 五、踩坑总结表
 
 | # | 坑 | 现象 | 根因 | 修法 | 类型 |
@@ -1531,6 +1924,10 @@ smart_query=False        + 没有 docstring  =  埋了个坑 ❌
 | 9 | `len(dict)` | 显示「3 段」（键数）| 改接口后漏改调用点 | `r.data["count"]` | **静默失效** |
 | 10 | `AI Agent` 查不到 | 返回 `[]` | 重排把全部打到门槛下 | 加 `note` 说明原因 | 系统级发现 |
 | 11 | 越界处理 | `IndexError` | 没做边界检查 | 抛 `ResourceError` | 设计决策 |
+| 12 | **stdio 下 print 污染协议** | stdout 里出现「加载嵌入模型...」 | `import main` 有 3 处模块级 print | `redirect_stdout(sys.stderr)` | 协议规范 |
+| 13 | **改了代码但没生效** | Cursor 仍用旧行为 | MCP Server 是**常驻进程**，不热重载 | 重启客户端里的 Server | 进程模型 |
+| 14 | **启动 28 秒** | stdio 连接耗时 48 秒 | `import sentence_transformers` 就要 20 秒 | 暂不改（Cursor 能容忍）；必要时延迟加载 | 性能 |
+| 15 | **简单问题 8 次操作** | 6 次检索 + 漏一个主题 | 缺「目录」接口，模型只能猜着搜 | 加 `data://kb/toc` | **接口设计** |
 
 ---
 
@@ -1634,7 +2031,7 @@ async with Client(mcp_server.mcp) as c:      # 无端口、无子进程、无网
 
 ```
 ✅ import main → 零重复代码
-⚠️ 代价：启动时加载两个模型（约 15 秒）+ 需要 API Key
+⚠️ 代价：启动时加载两个模型（实测约 28 秒）+ 需要 API Key
 ```
 
 **如果启动速度重要**，下一步可以把检索部分抽成独立的 `retrieval.py`：
@@ -1646,11 +2043,64 @@ research_agent/
 └── mcp_server.py    ← import retrieval（启动更快）
 ```
 
+### 11. 接口设计要听「真实使用」的反馈
+
+```
+不要凭"我觉得模型会怎么用" → 要去【看】它实际怎么用
+
+内存内测试：你决定下一步 → 测不出接口缺陷 ❌
+真实客户端：模型自己想办法 → 缺陷立刻暴露 ✅
+```
+
+**本项目实证**：一个最自然的问题引发了 8 次操作，加一个 8 行的 Resource 后降到 2 次。
+
+**而且验证要可量化**（操作次数、检索次数、答案完整性），不能靠"感觉好多了"。
+
+详细方法见 [专题 7](#专题-7工具设计要听真实使用的反馈-)。
+
+### 12. 「定义」与「入口」分离
+
+```
+mcp_server.py          → 定义（工具/资源/提示）+ HTTP 入口
+mcp_server_stdio.py    → stdio 入口（给桌面客户端）
+```
+
+**好处**：
+
+```
+① 原文件一行不用改，就能多一种启动方式
+② 一个 Server 定义，可以有多个入口（HTTP / stdio / 未来别的）
+③ 职责清晰：一个文件只回答一个问题
+```
+
+**原理**：`import mcp_server` 不会执行它的 `if __name__ == "__main__":` 块，
+所以能从任何地方拿到配置好的 `mcp` 对象，自己决定怎么启动。
+
+### 13. 调试策略：先内存内，再真实客户端
+
+```
+改代码
+   ↓
+① 内存内快速验证逻辑（秒级，不用重启任何东西）
+   ↓
+② 确认逻辑对了 → 重启客户端验证真实行为（要等 28 秒加载 + 手动重启）
+```
+
+**为什么**：
+
+```
+MCP Server 是常驻进程，改代码不热重载
+   → 每次改都要重启客户端里的 Server，还要等模型加载
+   → 如果每改一行都走这条路，效率极低
+```
+
+**所以：逻辑用内存内测，行为用真实客户端测。两件事分开。**
+
 ---
 
 ## 附录 A、最终代码
 
-### A.1 `mcp_server.py`（121 行）
+### A.1 `mcp_server.py`（132 行）
 
 ```python
 """把调研项目的资料检索能力封装成 MCP Server"""
@@ -1714,9 +2164,11 @@ def search_knowledge(query: str, max_results: int = 5, smart_query: bool = False
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 def list_knowledge_sources() -> list[str]:
-    """列出知识库里都有哪几篇资料（只有文件名 不含内容）
+    """列出知识库里都有哪几篇资料（只有文件名，不含内容）。
 
-     用途：想先了解「这个知识库能回答哪些方面的问题」时调用。
+    用途：想先了解「这个知识库能回答哪些方面的问题」时调用。
+    注意：本工具只返回文件名。想看每篇涵盖哪些主题，
+          请读取资源 data://kb/toc。
     """
     return sorted({c["source"] for c in research.chunks})
 
@@ -1755,6 +2207,15 @@ def get_chunk(index: int) -> str:
         ensure_ascii=False,
     )
 
+@mcp.resource("data://kb/toc")
+def get_kb_toc() -> str:
+    """知识库目录：每篇资料包含哪些片段（下标 + 标题）。"""
+    toc = {}
+    for i, c in enumerate(research.chunks):
+        title = c["text"].splitlines()[0].strip()
+        toc.setdefault(c["source"], []).append({"index": i, "title": title})
+    return json.dumps(toc, ensure_ascii=False, indent=2)
+
 @mcp.prompt
 def research_report(topic: str) -> str:
     """生成一份「撰写调研报告」的请求。
@@ -1776,7 +2237,37 @@ if __name__ == '__main__':
     mcp.run(transport="http", port=8001)
 ```
 
-### A.2 `mcp_demo.py` 结构
+### A.2 `mcp_server_stdio.py`（stdio 入口，26 行）
+
+```python
+"""mcp_server 的 stdio 入口
+
+为什么单独一个文件：
+    mcp_server.py        只负责【定义】（工具 / 资源 / 提示），它以 HTTP 方式启动
+    本文件               只负责【启动方式】——以 stdio 方式，供桌面客户端（Cursor 等）使用
+
+    同一个 Server 定义，可以有多个入口。定义与入口分离。
+"""
+import contextlib
+import sys
+
+# ⚠️ 关键：stdio 模式下 stdout 是【协议通道】（JSON-RPC），任何 print 都会污染它。
+#    mcp_server 在 import 时会 import main，而 main 在模块级有 3 处 print：
+#        "加载嵌入模型..." / "加载重排序模型..." / "已索引 N 个段落"
+#    所以把 import 期间的 stdout 临时改道到 stderr（stderr 是日志通道，随便打）。
+with contextlib.redirect_stdout(sys.stderr):
+    from mcp_server import mcp
+
+
+if __name__ == "__main__":
+    # mcp.run() 的默认传输就是 stdio
+    mcp.run()
+```
+
+**要点**：`import mcp_server` **不会**执行它的 `if __name__ == "__main__":` 块，
+所以能从任何地方拿到配置好的 `mcp` 对象，自己决定怎么启动。
+
+### A.3 `mcp_demo.py` 结构
 
 ```
 part1()  ── 验证三原语
@@ -1798,21 +2289,44 @@ part2()  ── 接进 Agent
    └─ 打印完整消息流
 ```
 
-### A.3 接入桌面客户端（示例）
+### A.4 接入桌面客户端（本项目实际使用的方式）
+
+**Cursor 的 MCP 配置**：`C:\Users\<用户名>\.cursor\mcp.json`
 
 ```json
 {
   "mcpServers": {
     "knowledge-base": {
       "command": "D:\\PythonCode\\.venv\\Scripts\\python.exe",
-      "args": ["D:\\PythonCode\\research_agent\\mcp_server.py"]
+      "args": ["D:\\PythonCode\\research_agent\\mcp_server_stdio.py"]
     }
   }
 }
 ```
 
-（需把 `mcp_server.py` 结尾的 `mcp.run(transport="http", ...)` 改成
-`mcp.run()`——即默认 **stdio**，这是桌面客户端的标准方式。）
+**三个易错点**：
+
+| 坑 | 说明 |
+|---|---|
+| 路径用**双反斜杠** | JSON 里 `\` 是转义符 |
+| 用 **venv 的 python** | 依赖装在 venv 里 |
+| 指向 **`mcp_server_stdio.py`** | 不是 `mcp_server.py`（那个默认起 HTTP）|
+
+**接入后要做的**：
+
+```
+① 重启 Cursor（改了 mcp.json 必须重启）
+② 等约 30 秒（Server 要加载模型）→ MCP 面板变绿
+③ 之后每次改 Server 代码，都要【重启那个 MCP Server】才生效
+```
+
+**Cursor 支持的传输**（三种都行）：
+
+| 传输 | 谁启动 Server | 配置方式 |
+|---|---|---|
+| **stdio** | Cursor 自己拉起进程 | `command` + `args`（本项目用这个）|
+| **Streamable HTTP** | 你手动启动 | `"url": "http://localhost:8001/mcp"` |
+| SSE | 你手动启动 | `"url": "..."` |
 
 ---
 
@@ -1843,6 +2357,9 @@ async with Client(mcp_server.mcp) as c:
 | 工具返回值 | 返回 `dict` 最好（中文正常 + structured 不被包装）|
 | `Args:` 段 | **前面必须空一行**，否则参数说明丢失 |
 | 装饰器首参 | `tool(name=)` / `resource(uri=)` / `prompt(name=)` |
+| **stdio 的 stdout** | 是**协议通道**，任何 `print` 都会污染它；日志一律走 `stderr` |
+| **改完代码** | MCP Server 是**常驻进程**，必须重启客户端里的 Server 才生效 |
+| **启动慢** | `import sentence_transformers` 约 20 秒；启动总耗时约 28 秒 |
 
 ### 依赖安装
 
