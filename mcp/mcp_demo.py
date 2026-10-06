@@ -4,11 +4,17 @@
 它只是把「三原语」全部列出来 —— 加了新东西自然就能看到。
 """
 import asyncio
+import sys
+from pathlib import Path
 
 from fastmcp import Client
 
-import mcp_server
+# 本文件在 mcp/ 子目录里，而 main.py 在上一级；把项目根目录加进 sys.path
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
+import mcp_server
 import main as research
 
 async def part1():
@@ -61,14 +67,19 @@ async def part1():
         for q in ["ReAct 架构的原理", "多 Agent 协作如何结合记忆机制与 RAG"]:
             r = await c.call_tool("search_knowledge", {"query": q}, raise_on_error=False)
             print(f"\n  查询：{q}")
-            print(f"  → count = {r.data['count']}")
-            for i, d in enumerate(r.data["docs"], 1):
+            # 注意：search_knowledge 返回 Pydantic 模型时，r.data 是重建的动态对象
+            #       （可属性访问、不可下标访问）。structured_content 是协议原样的 dict，
+            #       无论返回类型怎么变都稳定，所以统一用它取值。
+            sc = r.structured_content
+            print(f"  → count = {sc['count']}")
+            for i, d in enumerate(sc["docs"], 1):
                 print(f"     {i}. [{d['source']}] {d['text'][:45]}...")
-            print(f"  note: {r.data['note'][:60]}...")
+            print(f"  note: {sc['note'][:60]}...")
         r = await c.call_tool("search_knowledge", {"query": "AI Agent"}, raise_on_error=False)
+        sc = r.structured_content
         print(f"\n  查询：AI Agent")
-        print(f"  → count = {r.data['count']}")
-        print(f"  → note  = {r.data['note']}")
+        print(f"  → count = {sc['count']}")
+        print(f"  → note  = {sc['note']}")
 
         comp = "多 Agent 协作如何结合记忆机制与 RAG"
         r1 = await c.call_tool("search_knowledge",
@@ -79,8 +90,8 @@ async def part1():
         print("=" * 64)
         print("smart_query 对比（同一个复合问题）")
         print("=" * 64)
-        print(f"  关闭（默认）→ {r1.data['count']} 段")
-        print(f"  开启        → {r2.data['count']} 段")
+        print(f"  关闭（默认）→ {r1.structured_content['count']} 段")
+        print(f"  开启        → {r2.structured_content['count']} 段")
 
         r = await c.call_tool("list_knowledge_sources", {}, raise_on_error=False)
         print()

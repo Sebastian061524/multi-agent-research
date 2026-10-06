@@ -1,23 +1,70 @@
 """把调研项目的资料检索能力封装成 MCP Server"""
-from fastmcp import FastMCP
+import json
+import logging
+import sys
+from pathlib import Path
 
+import anyio
+from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ResourceError
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
+
+# 本文件在 mcp/ 子目录里，而 main.py 在上一级；把项目根目录加进 sys.path 才能 import main
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import main as research
 
-import json
+# ⚠️ MCP 的 logging 能力已在 2026-07-28 弃用（SEP-2577）。
+#    官方推荐：日志走 stderr（stdio 传输）+ OpenTelemetry（结构化可观测）。
+#    注意：stdio 模式下 stdout 是【协议通道】，日志绝不能写 stdout。
+#
+#    同时写一份到文件：stdio 客户端不一定把 stderr 显示出来，
+#    写文件才能可靠地验证「客户端真的在用新代码」。
+LOG_FILE = Path(__file__).parent / "mcp_server.log"
 
-from fastmcp.exceptions import ResourceError
+logging.basicConfig(
+    level=logging.WARNING,          # 全局只要 WARNING 以上，避免带出第三方库的噪音
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stderr),
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger("kb-server")
+logger.setLevel(logging.INFO)       # 只有本项目自己的 logger 输出 INFO
 
 mcp = FastMCP("Knowledge Base Server")
 
+# ==================== 输出模型（Pydantic）====================
+
+class Doc(BaseModel):
+    """知识库里的一个资料片段。"""
+    source: str = Field(description="资料文件名")
+    text: str = Field(description="资料原文片段")
+
+
+class SearchResult(BaseModel):
+    """检索结果。"""
+    count: int = Field(description="命中的段数")
+    docs: list[Doc] = Field(description="命中的资料列表（已按相关性排序）")
+    note: str = Field(description="附加说明：为什么是这个结果，或者为什么没有结果")
+
 @mcp.tool
 def ping() -> str:
-    """测试用：返回 pong。"""
+    """测试用：返回 pong（可用于连通性检查）。"""
+    logger.info("ping 被调用")
     return "pong"
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-def search_knowledge(query: str, max_results: int = 5, smart_query: bool = False) -> dict:
+async def search_knowledge(
+    ctx: Context,
+    query: str,
+    max_results: int = 5,
+    smart_query: bool = False,
+) -> SearchResult:
     """在本地知识库里检索资料片段。
 
     用途：需要查找事实、定义、方案对比时调用。
@@ -33,20 +80,32 @@ def search_knowledge(query: str, max_results: int = 5, smart_query: bool = False
         docs  —— 命中的资料列表（每项含 source 和 text）
         note  —— 附加说明：为什么是这个结果，或者为什么没有结果
     """
-    docs = research.search(query, max_k=max_results, use_decompose=smart_query)
+    # 日志走 stderr（MCP logging 能力已弃用；stdio 下 stdout 是协议通道，不能污染）
+    logger.info(f"检索：{query}  （transport={ctx.transport}）")
+
+    # 进度上报（本能力未弃用）——让客户端知道慢操作正在做什么
+    await ctx.report_progress(1, 2, "向量检索 + 重排序中")
+
+    # research.search 是同步阻塞的（向量编码 + 重排序），放线程池避免卡住事件循环
+    docs = await anyio.to_thread.run_sync(
+        lambda: research.search(query, max_k=max_results, use_decompose=smart_query)
+    )
+
+    await ctx.report_progress(2, 2, "完成")
 
     if docs:
-        return {
-            "count": len(docs),
-            "docs": [{"source": d["source"], "text": d["text"]} for d in docs],
-            "note": "已按相关性排序。请只使用这些片段作答。",
-        }
+        logger.info(f"命中 {len(docs)} 段")
+        return SearchResult(
+            count=len(docs),
+            docs=[Doc(source=d["source"], text=d["text"]) for d in docs],
+            note="已按相关性排序。请只使用这些片段作答。",
+        )
 
-    # ---- 空结果：说清楚为什么，并给出下一步建议 ----
-    return {
-        "count": 0,
-        "docs": [],
-        "note": (
+    logger.warning("没有命中任何片段（全部低于相关性门槛）")
+    return SearchResult(
+        count=0,
+        docs=[],
+        note=(
             "知识库里没有段落达到相关性门槛。可能原因："
             "① 这个方向资料里没有；"
             "② 你的问法与资料用词差异较大。"
@@ -54,7 +113,7 @@ def search_knowledge(query: str, max_results: int = 5, smart_query: bool = False
             "或换一种更贴近资料的说法重试。"
             "如果确实没有，请如实告知用户「资料未涵盖」。"
         ),
-    }
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
@@ -129,4 +188,5 @@ def research_report(topic: str) -> str:
 
 
 if __name__ == '__main__':
+    logger.info("以 HTTP 方式启动")
     mcp.run(transport="http", port=8001)

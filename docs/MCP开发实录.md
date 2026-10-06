@@ -5,10 +5,13 @@
 >
 > 项目仓库：`multi-agent-research`
 >
-> 最终交付：`mcp_server.py`（132 行）+ `mcp_server_stdio.py`（stdio 入口）
-> + `mcp_demo.py`（验证器，158 行）
+> 最终交付：`mcp/` 目录（`mcp_server.py` 定义 + `mcp_server_stdio.py` stdio 入口
+> + `mcp_demo.py` 验证器 + `verify_output_schema.py` schema 对比）
 >
 > 已在 **Cursor 3.4.20** 中接入并真实使用（含一次由真实使用反馈驱动的接口改进）
+>
+> ⚠️ **文件位置说明**：步骤 12 之前，MCP 文件都放在项目根目录；步骤 12 起统一移入 `mcp/`。
+> 下文步骤 1~11 里写的 `mcp_server.py` 等路径，在今天对应的是 `mcp/mcp_server.py` 等。
 
 ---
 
@@ -16,7 +19,7 @@
 
 - [一、项目概览](#一项目概览)
 - [二、背景知识：MCP 是什么](#二背景知识mcp-是什么)
-- [三、开发过程（11 个步骤）](#三开发过程11-个步骤)
+- [三、开发过程（12 个步骤）](#三开发过程12-个步骤)
 - [四、关键问题专题](#四关键问题专题)
 - [五、踩坑总结表](#五踩坑总结表)
 - [六、经验教训](#六经验教训)
@@ -56,32 +59,51 @@ MCP Server（三原语齐全）
 | **Resource** | `data://kb/toc` | 应用 | **知识库目录**：每篇包含哪些片段（下标 + 标题）|
 | **Prompt** | `research_report(topic)` | 用户 | 一键生成「调研某主题」的请求 |
 
+**Server 侧能力（不算原语，但都在用）**：
+
+| 能力 | 用什么 | 说明 |
+|---|---|---|
+| **输出契约** | Pydantic 模型（`SearchResult` / `Doc`）| 生成完整 output schema |
+| **日志** | `logging` → **stderr + 文件** | `ctx.info` 已弃用（SEP-2577）|
+| **进度** | `ctx.report_progress` | ✅ 未弃用 |
+| **传输感知** | `ctx.transport` | 区分 stdio / streamable-http |
+| **可观测性** | `mcp/mcp_server.log` 的四个观测点 | 验证客户端真的调用了 |
+
 ### 技术栈
 
 | 组件 | 用什么 |
 |---|---|
 | MCP 框架 | FastMCP 4.0.10 |
-| MCP 协议 | 2026-07-28 版本 |
+| MCP 协议 | 2026-07-28 版本（含 SEP-2577 弃用）|
 | 客户端（验证用）| `fastmcp.Client`（内存内）+ `langchain.mcp.MCPAdapter` + **Cursor 3.4.20（真实客户端）** |
 | 复用来源 | `main.py`（`research.search()` / `research.chunks` / `research.llm`）|
-| 传输 | 开发时 `stdio`/内存内，调试时 `http`（端口 8001）|
+| 传输 | `stdio`（客户端用）/ 内存内（测试）/ `http`（调试，端口 8001）|
+| 并发 | `anyio.to_thread.run_sync`（把同步阻塞的检索放进线程池）|
 
 ### 与主项目的关系
 
 ```
 research_agent/
-├── main.py            ← 多 Agent 调研报告（原有，未改动）
-├── mcp_server.py      ← 【新增】MCP 知识库服务（定义：工具/资源/提示）
-├── mcp_server_stdio.py ← 【新增】stdio 入口（给桌面客户端用）
-├── mcp_demo.py        ← 【新增】三原语验证器 + Agent 接入演示
-├── eval_retrieval.py  ← 检索层评测（原有）
-├── eval_report.py     ← 报告层评测（原有）
+├── main.py                ← 多 Agent 调研报告（原有，未改动）
+├── eval_retrieval.py      ← 检索层评测（原有）
+├── eval_report.py         ← 报告层评测（原有）
+├── eval_judge_calibration.py
+├── verify_feedback.py
+├── research_docs/  steps/
+├── mcp/                   ← 【新增】MCP 相关全部在这里
+│   ├── README.md              自述（能力清单 / 用法 / 注意事项）
+│   ├── mcp_server.py          Server 定义（工具 / 资源 / 提示）
+│   ├── mcp_server_stdio.py    stdio 入口（给桌面客户端用）
+│   ├── mcp_demo.py            三原语验证器 + Agent 接入演示
+│   ├── verify_output_schema.py 对比 dict 与 Pydantic 的 output schema
+│   └── mcp_server.log         运行时日志（gitignore）
 └── docs/
     ├── 多Agent项目开发实录.md   ← 原有
     └── MCP开发实录.md           ← 本文档
 ```
 
-**复用方式**：`mcp_server.py` 里 `import main as research`，直接用它的检索函数与数据。
+**复用方式**：`mcp/mcp_server.py` 里 `import main as research`（需先把项目根目录加进
+`sys.path`），直接用它的检索函数与数据。
 **零重复代码**，代价是启动时会连带加载嵌入/重排序模型（实测约 **28 秒**，其中光
 `import sentence_transformers` 就要 20 秒——它会连带导入 `torch`、`transformers`）。
 
@@ -163,7 +185,7 @@ research_agent/
 
 ---
 
-## 三、开发过程（11 个步骤）
+## 三、开发过程（12 个步骤）
 
 ### 步骤 1：搭 Server 空壳 + 一个测试工具
 
@@ -1445,7 +1467,7 @@ stderr → 日志通道              ← 客户端会转发给用户看
   "mcpServers": {
     "knowledge-base": {
       "command": "D:\\PythonCode\\.venv\\Scripts\\python.exe",
-      "args": ["D:\\PythonCode\\research_agent\\mcp_server_stdio.py"]
+      "args": ["D:\\PythonCode\\research_agent\\mcp\\mcp_server_stdio.py"]
     }
   }
 }
@@ -1663,6 +1685,348 @@ def get_kb_toc() -> str:
 交给一个真的在想「怎么回答用户」的 Agent
         ↓
 它的行为序列会告诉你：你的接口设计哪里不好
+```
+
+---
+
+### 步骤 12：补完两块拼图（Context + Pydantic），并整理目录
+
+#### 做了什么
+
+三件事：
+
+1. **Pydantic 输出模型**——把返回类型从 `dict` 换成 Pydantic 模型，让 output schema
+   从「黑盒」变成「完整契约」
+2. **`Context` 对象**——日志、进度、传输感知
+3. **目录整理**——所有 MCP 文件移入 `mcp/`，`test_schema.py` 改名 `verify_output_schema.py`
+
+#### 拼图 A：Pydantic 输出模型
+
+##### 先做个测量
+
+**新建 `mcp/verify_output_schema.py`**，用同一个工具定义两种返回类型，对比生成的 schema：
+
+```python
+@mcp.tool
+def search_dict(q: str) -> dict: ...
+
+class Doc(BaseModel):
+    """知识库里的一个资料片段。"""
+    source: str = Field(description="资料文件名")
+    text: str = Field(description="资料原文片段")
+
+class SearchResult(BaseModel):
+    """检索结果。"""
+    count: int = Field(description="命中的段数")
+    docs: list[Doc] = Field(description="命中的资料列表（已按相关性排序）")
+    note: str = Field(description="附加说明：为什么是这个结果，或者为什么没有结果")
+
+@mcp.tool
+def search_model(q: str) -> SearchResult: ...
+```
+
+##### 实测结果
+
+```
+【search_dict】
+  output_schema = {'additionalProperties': True, 'type': 'object'}
+                  ↑ 「这是个对象，里面有什么随便」= 【黑盒】
+
+【search_model】
+  output_schema = {'description': '检索结果。',
+    'properties': {
+      'count': {'description': '命中的段数', 'type': 'integer'},
+      'docs':  {'description': '命中的资料列表（已按相关性排序）',
+                'items': {'description': '知识库里的一个资料片段。',
+                          'properties': {'source': {'description': '资料文件名', 'type': 'string'},
+                                         'text':   {'description': '资料原文片段', 'type': 'string'}},
+                          'required': ['source', 'text'], 'type': 'object'},
+                'type': 'array'},
+      'note':  {'description': '附加说明：为什么是这个结果，或者为什么没有结果', 'type': 'string'}},
+    'required': ['count', 'docs', 'note'], 'type': 'object'}
+                  ↑ 完整的三层结构 + 每层都有说明 ✅
+```
+
+> **记录一个预测失准**：我们原本猜 `dict` 的 schema 是 `None`，实际是
+> `{'additionalProperties': True, 'type': 'object'}`。
+> **结论一样（都是黑盒），但具体值猜错了**——这就是为什么要跑实验而不是背文档。
+
+##### Pydantic 版本里三个值得注意的细节
+
+| # | 细节 | 说明 |
+|---|---|---|
+| 1 | **嵌套模型被内联展开** | `Doc` 的字段直接嵌进 `items`，没有用 `$ref`（FastMCP 为兼容不支持 JSON Schema 引用的客户端而自动解引用）|
+| 2 | **类 docstring 变成 description** | `'description': '检索结果。'` / `'知识库里的一个资料片段。'` → **Pydantic 模型也要写 docstring** |
+| 3 | **`required` 自动生成** | 没默认值的字段必填；给字段加默认值就会从 `required` 消失 |
+
+#### 拼图 B：`Context` 对象
+
+```python
+from fastmcp import Context
+
+@mcp.tool
+async def my_tool(ctx: Context, x: str) -> str:
+    await ctx.info(...)                 # 日志（客户端能看到）
+    await ctx.report_progress(1, 3)     # 进度
+    await ctx.read_resource(uri)        # 读自己注册的资源
+    ...
+    return "..."
+```
+
+**三个关键机制**：
+
+| # | 机制 | 说明 |
+|---|---|---|
+| 1 | **`ctx` 参数不出现在 schema 里** | FastMCP 按类型注解识别并自动注入；参数名和位置都不影响 |
+| 2 | **Context 方法是 async** | 所以你的工具通常要改成 `async def` |
+| 3 | ⚠️ **async 里调同步阻塞代码要放线程池** | 否则卡住整个事件循环 |
+
+**第 3 条是本步骤最容易忽略的坑**：
+
+```python
+# FastMCP 的规则：
+#   同步工具（def）      → 自动在线程池里跑 ✅
+#   异步工具（async def） → 在事件循环上跑
+#        ↓
+# 在 async 里直接调用 research.search()（几秒的 CPU 密集操作）
+#   → 卡住整个事件循环 ❌
+#
+# 修法：
+docs = await anyio.to_thread.run_sync(
+    lambda: research.search(query, max_k=max_results, use_decompose=smart_query)
+)
+```
+
+#### ⚠️ 遇到的问题（4 个）
+
+**问题 1：`ctx.info()` 已被协议弃用**
+
+```
+MCPDeprecationWarning: The logging capability is deprecated as of 2026-07-28 (SEP-2577).
+```
+
+**SEP-2577 一次性弃用了三个能力**：
+
+| 被弃用 | 官方替代方案 |
+|---|---|
+| **Roots** | 工具参数 / 资源 URI / 环境变量 |
+| **Sampling** | **Server 直接调 LLM API** |
+| **Logging** | **stderr（stdio 传输）+ OpenTelemetry** |
+
+**而 Logging 的弃用理由，正好印证了步骤 10 的判断**：
+
+> 规范原文：*"Standard logging mechanisms (**stderr for stdio transports**, OpenTelemetry
+> for structured observability) are mature, widely adopted, and better suited to logging
+> than an application-protocol channel."*
+
+```
+步骤 10 我们推断的：stdout = 协议通道，stderr = 日志通道
+协议规范现在的结论：日志请走 stderr，不要占用协议通道
+        ↓
+【完全一致】
+```
+
+**顺带修正了之前列的「MCP 进阶方向」**：Sampling 和 Roots 已弃用，不该再作为学习目标；
+Elicitation、认证、多 Server 聚合、`ctx.report_progress`、`ctx.read_resource` 仍然有效。
+
+**修法**：
+
+```python
+import logging
+import sys
+from pathlib import Path
+
+LOG_FILE = Path(__file__).parent / "mcp_server.log"
+
+logging.basicConfig(
+    level=logging.WARNING,          # 全局只要 WARNING 以上，避免带出第三方库的噪音
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stderr),
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger("kb-server")
+logger.setLevel(logging.INFO)       # 只有本项目自己的 logger 输出 INFO
+```
+
+**能力状态对照**：
+
+| Context 能力 | 状态 | 本项目用法 |
+|---|---|---|
+| `ctx.info/warning/error` | ❌ **已弃用** | 改用 `logger` |
+| `ctx.report_progress` | ✅ 有效 | 保留 |
+| `ctx.read_resource` | ✅ 有效 | 未用（可用）|
+| `ctx.elicit` | ✅ 有效 | 未用 |
+| `ctx.transport` | ✅ 有效 | 打日志时输出 |
+
+**问题 2：`logging.basicConfig(level=INFO)` 会带出第三方库噪音**
+
+```
+2026-10-06 16:52:39 [INFO] httpx2: HTTP Request: POST https://api.deepseek.com/... "200 OK"
+                          ↑ 我们不关心的噪音
+```
+
+**修法**：全局设 `WARNING`，只给自己的 logger 开 `INFO`（见上面的代码）。
+
+**问题 3：⚠️ 改了返回类型，客户端的取值方式也变了**
+
+```
+返回 dict          → r.data 是 dict        → r.data['count']     ✅
+返回 Pydantic 模型  → r.data 是 Root 对象   → r.data.count        ✅
+                                            → r.data['count']    ❌ TypeError
+```
+
+**实测报错**：
+
+```
+TypeError: 'Root' object is not subscriptable
+type(r.data) = <class 'fastmcp.utilities.json_schema_type.Root'>
+repr(r.data) = Root(count=2, docs=[Root(source='...', text='...')])
+```
+
+**FastMCP 会按 output schema 重建一个动态类型**，所以 `.data` 的类型随返回类型变化。
+
+**三种取值方式的稳定性**：
+
+| 取法 | 返回 `dict` 时 | 返回 Pydantic 时 | 稳定吗 |
+|---|---|---|---|
+| `r.data['count']` | ✅ | ❌ TypeError | ❌ |
+| `r.data.count` | ❌ | ✅ | ❌ |
+| **`r.structured_content['count']`** | ✅ | ✅ | **✅ 永远稳定** |
+
+> **结论：用 `r.structured_content`**——它是**协议原样的 dict**，不随返回类型变化。
+>
+> **这已经是同一主题的第四次出现**：
+> ```
+> 步骤 9   改返回类型 → 漏改 len() → 【静默】算错（len(dict) 恰好=3）
+> 步骤 12  改返回类型 → r.data['count'] → TypeError（这次报错了，比静默好）
+>          ↓
+> 【改接口就必须找出所有调用点】
+> ```
+
+**问题 4（观察）：多了一个用系统 python 的僵尸子进程**
+
+Cursor 拉起 Server 后，进程列表里出现了两个：
+
+```
+PID 37208  ← 父进程 Cursor.exe      用 venv python      ✅ 正确的
+PID 40344  ← 父进程是 PID 37208     用【系统 python】   ⚠️ 没有 fastmcp，必然失败
+```
+
+**来源未查明**（与 `main` 的加载链路有关），但**不影响功能**——实际通信的是 37184/37208。
+清理方式：重启客户端里的 MCP Server。
+
+> **判断哪个是"正确的"进程**：看它用的是不是 **venv 的 python**，
+> 以及**父进程是不是客户端**。用系统 python 的那个必然缺依赖。
+
+#### 步骤 12 的可观测性收益：四个观测点
+
+为了让「客户端到底有没有调用 Server」可验证，加了两处日志点：
+
+```python
+# mcp_server.py
+@mcp.tool
+def ping() -> str:
+    """测试用：返回 pong（可用于连通性检查）。"""
+    logger.info("ping 被调用")
+    return "pong"
+
+# mcp_server_stdio.py
+if __name__ == "__main__":
+    logger.info("以 stdio 方式启动（被客户端拉起）")
+    mcp.run()
+```
+
+**四个观测点**：
+
+| 日志行 | 证明什么 |
+|---|---|
+| `以 stdio 方式启动（被客户端拉起）` | 进程起来了，**而且跑的是新代码** |
+| `ping 被调用` | 客户端能调工具（连通性）|
+| `检索：…（transport=stdio）` | 模型真的调了工具 + 传输方式 |
+| `命中 N 段` | 底层检索链路正常 |
+
+**实测（Cursor 真实调用）**：
+
+```
+17:07:50  以 stdio 方式启动（被客户端拉起）
+17:07:57  ping 被调用
+17:08:23  检索：ReAct 架构  （transport=stdio）
+17:08:23  命中 2 段
+```
+
+**`transport=stdio` 是"客户端真的连上了"的铁证**：
+
+| 调用来源 | `ctx.transport` |
+|---|---|
+| 内存内测试 | `None` |
+| HTTP（自己起服务）| `streamable-http` |
+| **Cursor（stdio）** | **`stdio`** ✅ |
+
+> **顺带解决了步骤 10 遗留的困惑**：之前"模型没调工具"，不是因为连接断了，
+> 而是**提问时 Server 还在加载模型（约 28 秒）**，工具尚未就绪。
+> **正确顺序：连接 → 连通性（ping）→ 功能。**
+
+#### 拼图 C：目录整理
+
+```
+research_agent/
+├── main.py
+├── eval_*.py / verify_feedback.py
+├── research_docs/  steps/
+├── mcp/                          ← 新增：MCP 相关全部在这里
+│   ├── README.md                 自述（能力清单 / 用法 / 注意事项）
+│   ├── mcp_server.py             Server 定义
+│   ├── mcp_server_stdio.py       stdio 入口
+│   ├── mcp_demo.py               三原语验证器 + Agent 接入
+│   ├── verify_output_schema.py   ← 由 test_schema.py 改名
+│   └── mcp_server.log            运行时日志（gitignore）
+└── docs/
+    └── MCP开发实录.md
+```
+
+**移动后必须修的一件事**：`mcp_server.py` 要能 `import main`（`main.py` 在上一级）
+
+```python
+# 本文件在 mcp/ 子目录里，而 main.py 在上一级；把项目根目录加进 sys.path 才能 import main
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import main as research
+```
+
+**⚠️ 一个容易踩的坑：目录名 `mcp` 会不会遮蔽 MCP SDK 包？**
+
+```
+我们安装了 pip 包 mcp（`from mcp.types import ToolAnnotations`）
+现在又建了个目录 research_agent/mcp/
+        ↓
+把它加到 sys.path 后，import mcp 会不会解析到自己的目录？
+```
+
+**实测答案：不会** ✅
+
+```
+import mcp → D:\PythonCode\.venv\Lib\site-packages\mcp\__init__.py
+```
+
+**原因**：本目录**没有 `__init__.py`**，所以它只是一个"命名空间包候选"；
+Python 的导入规则是 **正规包（有 `__init__.py`）优先于命名空间包**。
+
+> ⚠️ **所以千万不要在 `mcp/` 里加 `__init__.py`**——那会把它变成正规包，从而遮蔽 SDK。
+
+#### 验证
+
+```
+✅ 语法检查：4 个文件全过
+✅ mcp/ 不遮蔽 SDK：import mcp → site-packages
+✅ 从根目录跑 mcp/mcp_demo.py：退出码 0，三原语全部正常
+✅ 从 C:\ 跑 mcp/verify_output_schema.py：退出码 0（路径无关）
+✅ stdio 入口：ping → pong，count = 2
+✅ 日志落到 mcp/mcp_server.log
+✅ Cursor 真实调用：四个观测点全部点亮，transport=stdio
 ```
 
 ---
@@ -1928,6 +2292,10 @@ smart_query=False        + 没有 docstring  =  埋了个坑 ❌
 | 13 | **改了代码但没生效** | Cursor 仍用旧行为 | MCP Server 是**常驻进程**，不热重载 | 重启客户端里的 Server | 进程模型 |
 | 14 | **启动 28 秒** | stdio 连接耗时 48 秒 | `import sentence_transformers` 就要 20 秒 | 暂不改（Cursor 能容忍）；必要时延迟加载 | 性能 |
 | 15 | **简单问题 8 次操作** | 6 次检索 + 漏一个主题 | 缺「目录」接口，模型只能猜着搜 | 加 `data://kb/toc` | **接口设计** |
+| 16 | **改了返回类型，客户端取值失效** | `TypeError: 'Root' object is not subscriptable` | `.data` 会按 output schema 重建动态类型 | 改用 `r.structured_content` | **改接口没找全调用点** |
+| 17 | **`ctx.info` 已弃用** | `MCPDeprecationWarning ... SEP-2577` | 协议 2026-07-28 弃用了 logging 能力 | 改用 stderr 日志（+ 文件）| **协议版本变更** |
+| 18 | **日志带出第三方噪音** | `[INFO] httpx2: HTTP Request: ...` | `logging.basicConfig(level=INFO)` 全局生效 | 全局 WARNING + 自己 logger 设 INFO | 日志配置 |
+| 19 | **目录名可能遮蔽 SDK 包** | 潜在风险：`import mcp` 解析到自己的目录 | `mcp/` 若加 `__init__.py` 会变成正规包 | **不加 `__init__.py`**（实测不遮蔽）| **命名与导入** |
 
 ---
 
@@ -2096,33 +2464,130 @@ MCP Server 是常驻进程，改代码不热重载
 
 **所以：逻辑用内存内测，行为用真实客户端测。两件事分开。**
 
+### 14. 返回值也是一种接口——改了就要改所有取值处
+
+```
+返回 dict          → r.data 是 dict        → r.data['count']
+返回 Pydantic 模型  → r.data 是 Root 对象   → r.data.count
+```
+
+**同一主题的第四次出现**（步骤 9 的 `len(dict)`、步骤 12 的 `TypeError`）。
+
+**最稳的取值方式**：**`r.structured_content`**——协议原样的 dict，**不随返回类型变化**。
+
+### 15. 协议的"弃用"是真实存在的，而且来得比想象快
+
+```
+你写代码时（2026-07-28 规范）：
+   ctx.info()  → 正常
+        ↓
+MCPDeprecationWarning：logging 能力已弃用（SEP-2577）
+        ↓
+而 FastMCP 的官方文档【还没更新】——它仍然把 ctx.info 当作推荐用法
+```
+
+**两个教训**：
+
+```
+① 官方文档可能滞后于协议；遇到 DeprecationWarning 要去查规范本身
+② 选学习方向时要看规范状态——Sampling / Roots / Logging 已弃用，
+   别再往这三个方向投入
+```
+
+**而且弃用的理由值得记住**：日志请走 **stderr + OpenTelemetry**，
+不要占用应用协议的通道——和我们在步骤 10 的推断完全一致。
+
+### 16. 目录命名会撞上第三方包名，但 Python 有明确规则
+
+```
+pip 包 mcp（MCP SDK）  vs  自己的目录 research_agent/mcp/
+```
+
+**实测：不会遮蔽** ✅ `import mcp` 仍解析到 site-packages。
+
+**规则**：**正规包（有 `__init__.py`）优先于命名空间包（没有 `__init__.py` 的目录）**。
+
+**所以**：目录叫 `mcp` 可以，但**千万不要往里加 `__init__.py`**——那会立刻遮蔽 SDK。
+
+> **通用提醒**：用第三方包名当目录名是有风险的（比如 `json/`、`logging/`、`types/`）。
+> 要么换个名字，要么清楚知道导入规则的优先级，**并且实测验证**。
+
 ---
 
 ## 附录 A、最终代码
 
-### A.1 `mcp_server.py`（132 行）
+### A.1 `mcp/mcp_server.py`（192 行）
+
+> 文件位置：**`mcp/mcp_server.py`**（下面这份与源文件同步更新）
 
 ```python
 """把调研项目的资料检索能力封装成 MCP Server"""
-from fastmcp import FastMCP
+import json
+import logging
+import sys
+from pathlib import Path
 
+import anyio
+from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ResourceError
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
+
+# 本文件在 mcp/ 子目录里，而 main.py 在上一级；把项目根目录加进 sys.path 才能 import main
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import main as research
 
-import json
+# ⚠️ MCP 的 logging 能力已在 2026-07-28 弃用（SEP-2577）。
+#    官方推荐：日志走 stderr（stdio 传输）+ OpenTelemetry（结构化可观测）。
+#    注意：stdio 模式下 stdout 是【协议通道】，日志绝不能写 stdout。
+#
+#    同时写一份到文件：stdio 客户端不一定把 stderr 显示出来，
+#    写文件才能可靠地验证「客户端真的在用新代码」。
+LOG_FILE = Path(__file__).parent / "mcp_server.log"
 
-from fastmcp.exceptions import ResourceError
+logging.basicConfig(
+    level=logging.WARNING,          # 全局只要 WARNING 以上，避免带出第三方库的噪音
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stderr),
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger("kb-server")
+logger.setLevel(logging.INFO)       # 只有本项目自己的 logger 输出 INFO
 
 mcp = FastMCP("Knowledge Base Server")
 
+# ==================== 输出模型（Pydantic）====================
+
+class Doc(BaseModel):
+    """知识库里的一个资料片段。"""
+    source: str = Field(description="资料文件名")
+    text: str = Field(description="资料原文片段")
+
+
+class SearchResult(BaseModel):
+    """检索结果。"""
+    count: int = Field(description="命中的段数")
+    docs: list[Doc] = Field(description="命中的资料列表（已按相关性排序）")
+    note: str = Field(description="附加说明：为什么是这个结果，或者为什么没有结果")
+
 @mcp.tool
 def ping() -> str:
-    """测试用：返回 pong。"""
+    """测试用：返回 pong（可用于连通性检查）。"""
+    logger.info("ping 被调用")
     return "pong"
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-def search_knowledge(query: str, max_results: int = 5, smart_query: bool = False) -> dict:
+async def search_knowledge(
+    ctx: Context,
+    query: str,
+    max_results: int = 5,
+    smart_query: bool = False,
+) -> SearchResult:
     """在本地知识库里检索资料片段。
 
     用途：需要查找事实、定义、方案对比时调用。
@@ -2138,20 +2603,32 @@ def search_knowledge(query: str, max_results: int = 5, smart_query: bool = False
         docs  —— 命中的资料列表（每项含 source 和 text）
         note  —— 附加说明：为什么是这个结果，或者为什么没有结果
     """
-    docs = research.search(query, max_k=max_results, use_decompose=smart_query)
+    # 日志走 stderr（MCP logging 能力已弃用；stdio 下 stdout 是协议通道，不能污染）
+    logger.info(f"检索：{query}  （transport={ctx.transport}）")
+
+    # 进度上报（本能力未弃用）——让客户端知道慢操作正在做什么
+    await ctx.report_progress(1, 2, "向量检索 + 重排序中")
+
+    # research.search 是同步阻塞的（向量编码 + 重排序），放线程池避免卡住事件循环
+    docs = await anyio.to_thread.run_sync(
+        lambda: research.search(query, max_k=max_results, use_decompose=smart_query)
+    )
+
+    await ctx.report_progress(2, 2, "完成")
 
     if docs:
-        return {
-            "count": len(docs),
-            "docs": [{"source": d["source"], "text": d["text"]} for d in docs],
-            "note": "已按相关性排序。请只使用这些片段作答。",
-        }
+        logger.info(f"命中 {len(docs)} 段")
+        return SearchResult(
+            count=len(docs),
+            docs=[Doc(source=d["source"], text=d["text"]) for d in docs],
+            note="已按相关性排序。请只使用这些片段作答。",
+        )
 
-    # ---- 空结果：说清楚为什么，并给出下一步建议 ----
-    return {
-        "count": 0,
-        "docs": [],
-        "note": (
+    logger.warning("没有命中任何片段（全部低于相关性门槛）")
+    return SearchResult(
+        count=0,
+        docs=[],
+        note=(
             "知识库里没有段落达到相关性门槛。可能原因："
             "① 这个方向资料里没有；"
             "② 你的问法与资料用词差异较大。"
@@ -2159,7 +2636,7 @@ def search_knowledge(query: str, max_results: int = 5, smart_query: bool = False
             "或换一种更贴近资料的说法重试。"
             "如果确实没有，请如实告知用户「资料未涵盖」。"
         ),
-    }
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
@@ -2234,10 +2711,13 @@ def research_report(topic: str) -> str:
 
 
 if __name__ == '__main__':
+    logger.info("以 HTTP 方式启动")
     mcp.run(transport="http", port=8001)
 ```
 
-### A.2 `mcp_server_stdio.py`（stdio 入口，26 行）
+### A.2 `mcp/mcp_server_stdio.py`（stdio 入口）（28 行）
+
+> 文件位置：**`mcp/mcp_server_stdio.py`**。要点：`import mcp_server` 不会执行它的 `__main__` 块，所以能从任何地方拿到配置好的 `mcp` 对象，自己决定怎么启动。
 
 ```python
 """mcp_server 的 stdio 入口
@@ -2247,6 +2727,10 @@ if __name__ == '__main__':
     本文件               只负责【启动方式】——以 stdio 方式，供桌面客户端（Cursor 等）使用
 
     同一个 Server 定义，可以有多个入口。定义与入口分离。
+
+用法：
+    由桌面客户端启动（它会自己调用这个脚本）
+    或手动测试：python mcp_server_stdio.py
 """
 import contextlib
 import sys
@@ -2256,18 +2740,17 @@ import sys
 #        "加载嵌入模型..." / "加载重排序模型..." / "已索引 N 个段落"
 #    所以把 import 期间的 stdout 临时改道到 stderr（stderr 是日志通道，随便打）。
 with contextlib.redirect_stdout(sys.stderr):
-    from mcp_server import mcp
+    from mcp_server import logger, mcp
 
 
 if __name__ == "__main__":
+    # 启动日志：用来确认「客户端确实拉起了这个 Server，而且跑的是新代码」
+    logger.info("以 stdio 方式启动（被客户端拉起）")
     # mcp.run() 的默认传输就是 stdio
     mcp.run()
 ```
 
-**要点**：`import mcp_server` **不会**执行它的 `if __name__ == "__main__":` 块，
-所以能从任何地方拿到配置好的 `mcp` 对象，自己决定怎么启动。
-
-### A.3 `mcp_demo.py` 结构
+### A.3 `mcp/mcp_demo.py` 结构
 
 ```
 part1()  ── 验证三原语
@@ -2298,7 +2781,7 @@ part2()  ── 接进 Agent
   "mcpServers": {
     "knowledge-base": {
       "command": "D:\\PythonCode\\.venv\\Scripts\\python.exe",
-      "args": ["D:\\PythonCode\\research_agent\\mcp_server_stdio.py"]
+      "args": ["D:\\PythonCode\\research_agent\\mcp\\mcp_server_stdio.py"]
     }
   }
 }
@@ -2310,7 +2793,7 @@ part2()  ── 接进 Agent
 |---|---|
 | 路径用**双反斜杠** | JSON 里 `\` 是转义符 |
 | 用 **venv 的 python** | 依赖装在 venv 里 |
-| 指向 **`mcp_server_stdio.py`** | 不是 `mcp_server.py`（那个默认起 HTTP）|
+| 指向 **`mcp/mcp_server_stdio.py`** | 不是 `mcp_server.py`（那个默认起 HTTP）|
 
 **接入后要做的**：
 
@@ -2318,7 +2801,35 @@ part2()  ── 接进 Agent
 ① 重启 Cursor（改了 mcp.json 必须重启）
 ② 等约 30 秒（Server 要加载模型）→ MCP 面板变绿
 ③ 之后每次改 Server 代码，都要【重启那个 MCP Server】才生效
+④ 验证：在 Cursor 里说「调用 knowledge-base 的 ping 工具」
+        然后看 mcp/mcp_server.log 有没有出现「ping 被调用」
 ```
+
+**⚠️ 顺序很重要：连接 → 连通性 → 功能**
+
+```
+如果不等它变绿就问正式问题
+        ↓
+工具还没就绪 → 模型只能用自己的知识回答
+        ↓
+看起来像"Server 没连上"，其实只是【问得太早】
+```
+
+**正确做法**：
+
+```
+① 等 MCP 面板变绿
+② 先用 ping 做连通性检查，看日志确认
+③ 再问正式问题
+```
+
+**日志里 `transport=stdio` 是"客户端真的连上了"的铁证**：
+
+| 调用来源 | `ctx.transport` |
+|---|---|
+| 内存内测试 | `None` |
+| HTTP | `streamable-http` |
+| **Cursor（stdio）** | **`stdio`** ✅ |
 
 **Cursor 支持的传输**（三种都行）：
 
@@ -2360,6 +2871,11 @@ async with Client(mcp_server.mcp) as c:
 | **stdio 的 stdout** | 是**协议通道**，任何 `print` 都会污染它；日志一律走 `stderr` |
 | **改完代码** | MCP Server 是**常驻进程**，必须重启客户端里的 Server 才生效 |
 | **启动慢** | `import sentence_transformers` 约 20 秒；启动总耗时约 28 秒 |
+| **结果取值** | 优先用 `r.structured_content`（协议原样 dict），**不随返回类型变化** |
+| **输出模型** | 用 Pydantic（`-> SearchResult`）才能生成完整 output schema；裸 `dict` 是黑盒 |
+| **`ctx.info`** | ❌ 已弃用（SEP-2577）→ 改用 `logging` 写 stderr/文件 |
+| **异步工具** | `async def` 里调同步阻塞代码要包 `anyio.to_thread.run_sync`，否则卡事件循环 |
+| **目录名 `mcp/`** | 不遮蔽 SDK 的前提是**不放 `__init__.py`** |
 
 ### 依赖安装
 
@@ -2374,4 +2890,5 @@ from langchain.mcp import MCPAdapter      # 会打印 LangChainBetaWarning，正
 
 ---
 
-**文档结束** · 对应代码：`mcp_server.py` / `mcp_demo.py`
+**文档结束** · 对应代码：`mcp/mcp_server.py` / `mcp/mcp_server_stdio.py` / `mcp/mcp_demo.py`
+· 自述见 `mcp/README.md`

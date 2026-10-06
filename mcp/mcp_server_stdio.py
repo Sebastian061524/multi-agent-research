@@ -18,9 +18,11 @@ import sys
 #        "加载嵌入模型..." / "加载重排序模型..." / "已索引 N 个段落"
 #    所以把 import 期间的 stdout 临时改道到 stderr（stderr 是日志通道，随便打）。
 with contextlib.redirect_stdout(sys.stderr):
-    from mcp_server import mcp
+    from mcp_server import logger, mcp
 
 
 if __name__ == "__main__":
+    # 启动日志：用来确认「客户端确实拉起了这个 Server，而且跑的是新代码」
+    logger.info("以 stdio 方式启动（被客户端拉起）")
     # mcp.run() 的默认传输就是 stdio
     mcp.run()

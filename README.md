@@ -116,15 +116,17 @@ python main.py
 ```
 research_agent/
 ├── main.py                    ← 主程序（唯一入口）
-├── mcp_server.py              ← 【MCP】知识库服务（Tools + Resources + Prompts）
-├── mcp_server_stdio.py        ← 【MCP】stdio 入口（给桌面客户端用）
-├── mcp_demo.py                ← 【MCP】三原语验证器 + Agent 接入演示
 ├── eval_retrieval.py          ← 第一层评测：检索层
 ├── eval_report.py             ← 第二层评测：报告层
 ├── eval_judge_calibration.py  ← 裁判校准
 ├── verify_feedback.py         ← 验证审校反馈链路（返回测试）
 ├── research_docs/             ← 资料库（放你的 .txt / .md）
 ├── steps/                     ← 构建过程归档（step1 ~ step10 + 验证脚本）
+├── mcp/                       ← 【MCP】知识库服务（自述见 mcp/README.md）
+│   ├── mcp_server.py             Server 定义（Tools + Resources + Prompts）
+│   ├── mcp_server_stdio.py       stdio 入口（给桌面客户端用）
+│   ├── mcp_demo.py               三原语验证器 + Agent 接入演示
+│   └── verify_output_schema.py   对比 dict 与 Pydantic 的 output schema
 ├── docs/
 │   ├── 多Agent项目开发实录.md   ← 多 Agent 项目开发记录
 │   └── MCP开发实录.md          ← MCP 封装开发记录
@@ -160,7 +162,7 @@ research_agent/
 
 完整的踩坑记录与经验总结见 **[docs/多Agent项目开发实录.md](docs/多Agent项目开发实录.md)**（16 个开发步骤、20 条踩坑记录、15 条经验教训）。
 
-把检索能力封装成标准 MCP Server 的过程见 **[docs/MCP开发实录.md](docs/MCP开发实录.md)**（9 个开发步骤、11 条踩坑记录、10 条经验教训）。
+把检索能力封装成标准 MCP Server 的过程见 **[docs/MCP开发实录.md](docs/MCP开发实录.md)**（12 个开发步骤、15 条踩坑记录、13 条经验教训）。
 
 ## 🔍 关键实现
 
@@ -393,8 +395,10 @@ python verify_feedback.py         # 验证审校反馈链路（改了撰写/审�
 
 ## 🔌 MCP 服务（把检索能力开放出去）
 
-`mcp_server.py` 把本项目的检索能力封装成**标准 MCP Server**——任何支持 MCP 的客户端都能接入
+`mcp/mcp_server.py` 把本项目的检索能力封装成**标准 MCP Server**——任何支持 MCP 的客户端都能接入
 （Claude Desktop / Cursor / 其他 Agent），而且**检索代码零重复**（直接复用 `main.py` 里的 `search()`）。
+
+**MCP 相关文件都在 `mcp/` 目录里**，自述见 **[mcp/README.md](mcp/README.md)**。
 
 | 原语 | 提供 | 谁控制 |
 |---|---|---|
@@ -405,7 +409,7 @@ python verify_feedback.py         # 验证审校反馈链路（改了撰写/审�
 **验证方式**（内存内连接，不用起服务、不用管端口）：
 
 ```powershell
-python mcp_demo.py
+python mcp/mcp_demo.py
 ```
 
 它会依次验证三原语，然后把 Server 接进 LangChain Agent，观察**模型自主检索**。
@@ -420,11 +424,13 @@ python mcp_demo.py
 - **接口设计要听真实使用的反馈**——在 Cursor 里问「知识库里有什么资料」，观察工具调用序列
   发现有 **8 次操作（6 次检索）且漏了一个主题**；补一个 `data://kb/toc` 目录资源后
   降到 **2 次操作（0 次检索）**，答案也完整了
+- **日志走 stderr + 文件**——MCP 的 logging 能力已在 2026-07-28 弃用（SEP-2577），
+  且 stdio 下 stdout 是协议通道；日志同时写 `mcp/mcp_server.log` 便于验证客户端调用
 
-**接入桌面客户端**：`mcp_server_stdio.py` 是 stdio 入口（**不改 `mcp_server.py`**），
+**接入桌面客户端**：`mcp/mcp_server_stdio.py` 是 stdio 入口（**不改 `mcp_server.py`**），
 在 Cursor 的 `~/.cursor/mcp.json` 里配置即可——已实测在 Cursor 3.4.20 中可用。
 
-开发过程（11 个步骤、15 条踩坑记录）见 **[docs/MCP开发实录.md](docs/MCP开发实录.md)**。
+开发过程（12 个步骤、15 条踩坑记录）见 **[docs/MCP开发实录.md](docs/MCP开发实录.md)**。
 
 ## 🔧 技术栈
 
