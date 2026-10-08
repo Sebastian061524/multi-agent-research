@@ -423,6 +423,41 @@ def clean_input(s: str) -> str:
     return s.replace("\ufeff", "").strip()
 
 
+def pick_thread_id(graph, base: str):
+    """挑一个可以安全开跑的 thread_id，返回 (thread_id, config, snap)
+
+    为什么需要它 —— 已经跑完的会话【不能原地重跑】：
+        State.findings 用的是 add 累加器（见上面 class State 的注释）。
+        fan_out 并行派发多个 research_one，每个都写 findings，
+        必须有累加器才能合并成一份；改成覆盖语义会丢掉大部分调研结果。
+        代价是旧 findings 清不掉 —— 原地重跑时新的会 add 到旧的后面。
+        而 topic 是无 reducer 字段、会被覆盖成新主题
+        → write_node 把两轮资料拼进同一篇报告，张冠李戴，且不报任何错。
+
+    三种情况：
+        snap.next 非空  → 有断点，交给续跑分支，不动 ID
+        snap.values 为空 → 全新会话，直接用
+        否则            → 已跑完，自动改成 base#2、base#3……
+
+    能靠结构的别靠纪律：与其记得「重跑要换 ID」，不如让代码自动换。
+    """
+    # 全新会话 / 有断点要续跑 → 直接用原来的 ID
+    config = {"configurable": {"thread_id": base}}
+    snap = graph.get_state(config)
+    if snap.next or not snap.values:
+        return base, config, snap
+
+    # 已跑完 → 换一个带序号的 ID（base#2、base#3……直到找到干净的）
+    n = 2
+    while True:
+        thread_id = f"{base}#{n}"
+        config = {"configurable": {"thread_id": thread_id}}
+        snap = graph.get_state(config)
+        if snap.next or not snap.values:
+            return thread_id, config, snap
+        n += 1
+
+
 if __name__ == "__main__":
     # ---- 对照实验开关 ----
     # 加 --no-memory：不读历史记忆（A/B 对照用，隔离"记忆"这个变量）
@@ -453,10 +488,13 @@ if __name__ == "__main__":
         mem.close()
         raise SystemExit(0)
 
-    thread_id = clean_input(input("会话 ID（回车用 default）：")) or "default"
-    config = {"configurable": {"thread_id": thread_id}}
+    typed_id = clean_input(input("会话 ID（回车用 default）：")) or "default"
+    # 已跑完的会话会自动换成一个带序号的 ID，避免 findings 累加污染新报告
+    thread_id, config, snap = pick_thread_id(graph, typed_id)
 
-    snap = graph.get_state(config)
+    if thread_id != typed_id:
+        print(f"\n♻️  会话「{typed_id}」已经跑完了，本次自动改用「{thread_id}」")
+        print("    （findings 带 add 累加器、清不掉；原地重跑会把上一轮资料混进新报告）")
 
     def show_stages(vals, skipping, next_nodes=()):
         """汇报四个阶段的状态：已完成 / 本次执行 / 尚未轮到
