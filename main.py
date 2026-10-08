@@ -1,9 +1,12 @@
 import os
 import glob
+import sys
 import time
 from operator import add
 from typing import Annotated, TypedDict
 
+import sqlite3
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from langgraph.types import Send
 
@@ -12,6 +15,12 @@ from dotenv import load_dotenv
 
 # 项目根目录（本文件所在目录）——后续所有路径都基于它，不依赖当前工作目录
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 记忆库路径：必须放在【模块级】，不能放进 __main__
+#   - write_node 是模块级函数，也要用它
+#   - main.py 被 import 时（如 mcp/mcp_server.py 的 `import main as research`）
+#     __main__ 块根本不会执行 → 定义在里面的常量会 NameError
+MEM_DB = os.path.join(BASE_DIR, "memory", "memory.db")
 
 # 显式指定 .env 位置，避免因工作目录不同而找不到
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -23,6 +32,10 @@ from langgraph.graph import StateGraph, START, END
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from langchain_openai import ChatOpenAI
 
+# 本项目自己的模块（正规包写法：任何 IDE 都能静态解析，不需要额外配置）
+from memory.memory_store import MemoryStore
+
+
 class State(TypedDict):
     """Agent 之间共享的「黑板」"""
     topic: str           # 调研主题
@@ -31,6 +44,7 @@ class State(TypedDict):
     report: str          # ③ 撰写者写
     review: str          # 审校意见
     revision_count: int  # 重写次数 避免死循环
+    memory_context: str  # ④ 历史调研记忆（检索来的，供规划者参考）
 
 
 llm = ChatOpenAI(
@@ -177,6 +191,11 @@ def plan_node(state: State):
 
     【资料库中实际可用的内容】
     {overview}
+    
+    【历史调研记忆】
+    {state.get("memory_context") or "（无 —— 这是第一次调研这个方向）"}
+    如果上面有历史记录，请【避免重复拆出完全相同的子问题】，
+    尽量换个角度补充，或者顺着上次的结论深入。
 
     用户的调研主题是：{topic}
 
@@ -261,18 +280,29 @@ def write_node(state: State):
         {state['review']}
         """
 
+    # 读取用户偏好
+    mem = MemoryStore(MEM_DB)
+    prefs = mem.list_preferences()
+    mem.close()
+
+    pref_block = ""
+    if prefs:
+        pref_block = "\n【用户偏好 —— 请在不违背第 3 条的前提下尽量满足】\n" + \
+                     "\n".join(f"- {p}" for p in prefs) + "\n"
+
+
     prompt = f"""你是一名专业研究员。请根据下面的资料，撰写一份关于「{state['topic']}」的调研报告。
 
-要求：
-1. 使用 Markdown 格式
-2. 结构包含三部分：## 概述、## 分点论述、## 结论
-3. **只使用提供的资料**，不要编造资料中没有的信息
-4. 如果某个子问题的资料不足，在对应位置明确写出「资料未涵盖此部分」
-
-【资料】
-{materials}
-{feedback}
-"""
+    要求：
+    1. 使用 Markdown 格式
+    2. 结构包含三部分：## 概述、## 分点论述、## 结论
+    3. **只使用提供的资料**，不要编造资料中没有的信息
+    4. 如果某个子问题的资料不足，在对应位置明确写出「资料未涵盖此部分」
+    {pref_block}
+    【资料】
+    {materials}
+    {feedback}
+    """
 
     resp = llm.invoke(prompt)
     count = state.get("revision_count", 0) + 1
@@ -369,12 +399,150 @@ builder.add_conditional_edges(
     {"rewrite": "write", "end": END}
 )
 
-graph = builder.compile()
+# checkpointer：把每一步的状态存进 SQLite，支持中断后接着跑
+_ckpt_conn = sqlite3.connect(
+    os.path.join(BASE_DIR, "checkpoints.db"),
+    check_same_thread=False,          # LangGraph 可能在线程里用这个连接
+)
+# ---- 演示开关 ----
+# 设成节点名（如 "write" / "plan" / "research_one"）→ 在该节点【之前】必然暂停
+# 用来演示「中断 → 重启 → 接着跑」；正式使用请设为 None
+PAUSE_BEFORE = "write"
+graph = builder.compile(
+    checkpointer=SqliteSaver(_ckpt_conn),
+    interrupt_before=[PAUSE_BEFORE] if PAUSE_BEFORE else None,
+)
 # ==================== 运行 ====================
-if __name__ == "__main__":
-    topic = input("请输入调研主题：")
+def clean_input(s: str) -> str:
+    """规范化终端输入：去掉 BOM 等不可见字符
 
-    result = graph.invoke({"topic": topic})
+    用管道喂输入时（@("id") | python main.py）编码不由程序控制，
+    第一行可能带上 \ufeff，导致 thread_id 查不到断点、还会被存进数据库。
+    输入是「外部数据」，在边界处一次清干净，后面所有代码都不用操心。
+    """
+    return s.replace("\ufeff", "").strip()
+
+
+if __name__ == "__main__":
+    # ---- 对照实验开关 ----
+    # 加 --no-memory：不读历史记忆（A/B 对照用，隔离"记忆"这个变量）
+    USE_MEMORY = "--no-memory" not in sys.argv
+
+    # ---- 偏好管理命令：非交互，跑完立即退出 ----
+    if "--prefs" in sys.argv:
+        mem = MemoryStore(MEM_DB)
+        prefs = mem.list_preferences()
+        if prefs:
+            print(f"📌 已记录的偏好（{len(prefs)} 条）：")
+            for p in prefs:
+                print(f"  · {p}")
+        else:
+            print("📌 还没有记录任何偏好")
+        mem.close()
+        raise SystemExit(0)
+
+    if "--pref" in sys.argv:
+        idx = sys.argv.index("--pref")
+        text = " ".join(sys.argv[idx + 1:])
+        if not text:
+            print('❌ 用法：python main.py --pref "偏好内容"')
+            raise SystemExit(1)
+        mem = MemoryStore(MEM_DB)
+        ok = mem.add_preference(text)
+        print(f"✅ 已记住偏好：{text}" if ok else f"ℹ️ 这条偏好之前已经记过了：{text}")
+        mem.close()
+        raise SystemExit(0)
+
+    thread_id = clean_input(input("会话 ID（回车用 default）：")) or "default"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    snap = graph.get_state(config)
+
+    def show_stages(vals, skipping, next_nodes=()):
+        """汇报四个阶段的状态：已完成 / 本次执行 / 尚未轮到
+
+        next_nodes: snap.next 里的节点名，这些是【马上就要跑的】
+        """
+        print("   阶段状态：")
+
+        def line(name, node, detail):
+            done = detail[1]
+            desc = detail[0]
+            if done and skipping:
+                icon, tail = "⏭️ ", "本次跳过"
+            elif done:
+                icon, tail = "✅", "已完成"
+            elif node in next_nodes:
+                icon, tail = "▶️ ", "本次执行"          # ← 马上要跑的
+            else:
+                icon, tail = "⏸️ ", "尚未轮到"
+            print(f"     {icon} {name} —— {desc}（{tail}）")
+
+        qs = vals.get("sub_questions") or []
+        fs = vals.get("findings") or []
+        rp = vals.get("report") or ""
+        rv = vals.get("review") or ""
+
+        line("① 规划者", "plan", ("拆解子问题" if not qs else f"{len(qs)} 个子问题", bool(qs)))
+        line("② 调研者", "research_one", ("并行调研" if not fs else f"{len(fs)} 条要点", bool(fs)))
+        line("③ 撰写者", "write", ("生成报告" if not rp else f"{len(rp)} 字报告", bool(rp)))
+        line("④ 审校者", "review", ("审校报告" if "通过" not in rv else "已通过", "通过" in rv))
+
+    if snap.next:
+        # get_state().next 非空 = 上次没跑完 → 从断点继续
+        print(f"\n🔁 检测到未完成的会话（下一步：{snap.next}）")
+        print("   从断点继续，已跑过的节点不会重跑\n")
+        show_stages(snap.values, skipping=True, next_nodes=snap.next)
+        print()
+        result = graph.invoke(None, config)          # ← 传 None = 续跑
+    else:
+        print("\n🆕 新会话，从头开始")
+        topic = clean_input(input("请输入调研主题："))
+
+        # ---- 检索历史记忆：这个主题以前调研过吗？----
+        # --no-memory 时不检索（对照组），memory_context 保持空字符串
+        past = []
+        if USE_MEMORY:
+            memory = MemoryStore(
+                MEM_DB,
+                embed=lambda texts: model.encode(texts, normalize_embeddings=True),
+            )
+            past = memory.search_sessions(topic, top_k=2, min_score=0.40)
+            memory.close()
+
+        memory_context = ""
+        if past:
+            print(f"\n📚 这个主题以前调研过：")
+            lines = []
+            for h in past:
+                print(f"   · [{h['score']}] {h['topic']}   ({h['created_at']})")
+                lines.append(f"- 主题：{h['topic']}（{h['created_at']}）")
+                if h["sub_questions"]:
+                    lines.append(f"  当时拆的子问题：{'；'.join(h['sub_questions'])}")
+            memory_context = "\n".join(lines)
+        elif USE_MEMORY:
+            print("\n📚 没有相关的历史调研")
+        else:
+            print("\n📚 【--no-memory】跳过记忆检索（对照组）")
+
+        print()
+        result = graph.invoke(
+            {"topic": topic, "memory_context": memory_context}, config
+        )
+
+    # ---- 收尾 ----
+    # ⚠️ 关键：interrupt_before 会让 invoke【提前返回】，那时的 State 是不完整的
+    #    （停在 write 之前 → 没有 report / review 字段）
+    #    所以要先判断"跑完了没"，再决定要不要输出报告。
+    #    判断方式：get_state().next 为空 = 跑完了；非空 = 还停在断点。
+    final = graph.get_state(config)
+    if final.next:
+        print("\n" + "=" * 60)
+        print(f"⏸️  已暂停在断点（下一步：{final.next}）")
+        print("=" * 60)
+        print("   状态已存入 checkpoints.db。")
+        print(f"   再次运行并用同一个会话 ID（{thread_id}）即可从断点继续。")
+        raise SystemExit(0)
 
     print("\n" + "=" * 60)
     print("📄 调研报告")
@@ -382,5 +550,24 @@ if __name__ == "__main__":
     print(result["report"])
 
     with open(os.path.join(BASE_DIR, "report.md"), "w", encoding="utf-8") as f:
-        f.write(f"# {topic}\n\n{result['report']}")
+        f.write(f"# {result['topic']}\n\n{result['report']}")
     print("\n✅ 报告已保存到 report.md")
+
+    # ---- 写记忆：把这次调研存成一条会话摘要 ----
+    # ⚠️ 只记【事实】——调研了什么、拆了哪些子问题、报告怎么开的。
+    #    不记"结论对不对"（结论可能错、会过时，记下来会误导以后的会话）。
+    # ⚠️ 必须放在最末尾：上面的 `if final.next: raise SystemExit(0)` 保证了
+    #    「只有真正跑完才会走到这里」——断点时的状态是不完整的，不能写记忆。
+    memory = MemoryStore(
+        MEM_DB,
+        embed=lambda texts: model.encode(texts, normalize_embeddings=True),
+    )
+    memory.save_session(
+        thread_id=thread_id,
+        topic=result["topic"],
+        sub_questions=result["sub_questions"],
+        report_head=result["report"],
+    )
+    print(f"\n🧠 已记住这次调研（记忆库现有 {memory.stats()['sessions']} 条会话）")
+    memory.close()
+

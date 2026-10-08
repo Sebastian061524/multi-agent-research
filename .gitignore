@@ -5,6 +5,10 @@
 # 生成物
 report.md
 
+# 运行期数据（每次跑都会变，不提交）
+checkpoints.db
+memory/memory.db
+
 # Python
 __pycache__/
 *.py[cod]
