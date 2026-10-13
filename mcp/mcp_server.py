@@ -63,7 +63,7 @@ async def search_knowledge(
     ctx: Context,
     query: str,
     max_results: int = 5,
-    smart_query: bool = False,
+    smart_query: bool = True,
 ) -> SearchResult:
     """在本地知识库里检索资料片段。
 
@@ -71,17 +71,25 @@ async def search_knowledge(
     返回的是原文片段，请只依据这些片段作答，不要编造。
 
     Args:
-        query: 检索问题，请一次只问一个概念；如果要查多个方面，请分多次调用本工具
+        query: 检索问题
         max_results: 最多返回几段资料，默认 5 段
-        smart_query: 是否让服务器内部再做一次「查询分解」，默认关闭
+        smart_query: 是否让服务器内部再做一次「查询分解」，【默认开启】
+                     除非你明确知道自己在省成本，否则别关
 
     Returns:
         count —— 命中的段数
         docs  —— 命中的资料列表（每项含 source 和 text）
         note  —— 附加说明：为什么是这个结果，或者为什么没有结果
     """
+    # ⚠️ smart_query 默认改成 True 的依据（留出集 14 条实测）：
+    #      关闭：召回 0.86  精确 0.91
+    #      开启：召回 1.00  精确 0.95
+    #    代价：每次检索多约 0.7 秒（一次 LLM 调用）。
+    #    这个交换比很划算 —— 而且「查询分解」不只是拆复合问题，
+    #    它还会【改写查询】（例如「…的机制是什么」→「…机制」），
+    #    这一层收益靠任何关键词规则都拿不到（实测过，规则版在留出集上失败）。
     # 日志走 stderr（MCP logging 能力已弃用；stdio 下 stdout 是协议通道，不能污染）
-    logger.info(f"检索：{query}  （transport={ctx.transport}）")
+    logger.info(f"检索：{query}  （优化={smart_query} transport={ctx.transport}）")
 
     # 进度上报（本能力未弃用）——让客户端知道慢操作正在做什么
     await ctx.report_progress(1, 2, "向量检索 + 重排序中")
