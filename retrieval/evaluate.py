@@ -40,41 +40,20 @@ KINDS = list(dict.fromkeys(item["kind"] for item in DATA))
 
 # ==================== 要对比的检索策略 ====================
 # 只改这个列表就能加对照组。第一项是基线。
-#   _retrieve                  ：单查询两阶段检索
-#                                （= 现在 MCP 服务 smart_query=False 时的行为）
-#   search(use_decompose=True) ：先把问题拆成子查询，各自检索再合并去重
 #
-# 「智能分解」的思路：decompose 要花一次 LLM 调用，别对每条查询都花。
-# 先用【文字规则】判断像不像复合问题，可疑的才调 LLM。
+# 当前这一组是个 2×2：{粗筛方式} × {候选预算}。
+# 因为「加 BM25 有没有用」和「预算多大」是耦合的（见 docs/检索开发实录.md 专题 12）：
+#   · 预算 >= 语料段数 → 候选池 = 全集 → 加什么都是全集，**空操作**
+#   · 预算 < 语料段数  → 召回层真的在筛 → 这时才比得出差别
 #
-# ⚠️ 为什么用文字规则而不是检索分数：
-#    诊断数据显示，复合查询在精排分上也是「一个段落一枝独秀」
-#    （0.9881 vs 其余 <0.01），和单概念查询长得一模一样 —— 分数判别不了。
-COMPOUND_MARKERS = ("和", "与", "、", "以及", "还有", "对比", "区别",
-                    "有什么不同", "哪个", "分别")
-
-# 统计「智能分解」到底对几条查询花了 LLM 调用
-SMART_STATS = {"llm_calls": 0, "total": 0}
-
-
-def looks_compound(query: str) -> bool:
-    """便宜的预判：查询里有没有并列 / 比较结构的词"""
-    return any(marker in query for marker in COMPOUND_MARKERS)
-
-
-def smart_search(query):
-    """可疑才分解 —— 其余直接单查询检索，省掉 LLM 调用"""
-    SMART_STATS["total"] += 1
-    if looks_compound(query):
-        SMART_STATS["llm_calls"] += 1
-        return R.search(query, use_decompose=True)
-    return R._retrieve(query)
-
-
+# 历史对照组（已验完，结论见 docs/检索开发实录.md）：
+#   search(use_decompose=True) → 有效，已把 MCP 的 smart_query 默认改成 True
+#   「智能分解」文字规则        → 留出集上失败，已废弃，代码也删掉了
 RETRIEVERS = [
-    ("单查询（现在的默认）", lambda q: R._retrieve(q)),
-    ("带查询分解（全开）", lambda q: R.search(q, use_decompose=True)),
-    ("智能分解（规则预筛）", smart_search),
+    ("预算 20 · 纯向量（旧的默认）", lambda q: R._retrieve(q, use_bm25=False)),
+    ("预算 20 · 混合（∪BM25）", lambda q: R._retrieve(q, use_bm25=True)),
+    ("预算 3 · 纯向量", lambda q: R._retrieve(q, use_bm25=False, coarse_k=3)),
+    ("预算 3 · 混合（∪BM25）", lambda q: R._retrieve(q, use_bm25=True, coarse_k=3)),
 ]
 
 
@@ -225,12 +204,6 @@ def main():
     if changed == 0:
         print("  （所有策略的结果完全一样）")
     print(f"\n  共 {changed}/{len(DATA)} 条结果不同")
-
-    # ---- 智能分解到底省了多少次 LLM 调用 ----
-    if SMART_STATS["total"]:
-        n, t = SMART_STATS["llm_calls"], SMART_STATS["total"]
-        print(f"\n智能分解的 LLM 调用：{n}/{t} 条查询（{n / t:.0%}）"
-              f"    —— 「全开」是 {t}/{t}（100%）")
 
 
 if __name__ == "__main__":

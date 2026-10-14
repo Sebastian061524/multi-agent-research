@@ -78,6 +78,12 @@ if not chunks:
 embeddings = model.encode([c["text"] for c in chunks], normalize_embeddings=True)
 print(f"已索引 {len(chunks)} 个段落")
 
+# BM25 索引（稀疏检索）。纯 Python 数词频，几毫秒，而且只在语料变动时才需要重建。
+# 零件在 retrieval/bm25.py：中文 token 化 + BM25 + 停用词表。
+from retrieval.bm25 import STOPWORDS, BM25          # noqa: E402
+
+bm25 = BM25([c["text"] for c in chunks], stopwords=STOPWORDS)
+
 RERANK_THRESHOLD = 0.3   # 低于这个分数视为「不相关」，直接丢弃
 
 # ==================== 查询分解 ====================
@@ -112,24 +118,55 @@ def decompose(query, max_subs=4):
     # 兜底：模型没给出有效内容时，退回原问题
     return subs[:max_subs] if subs else [query]
 
-def _retrieve(query, max_k=5, min_score=RERANK_THRESHOLD, coarse_k=20):
-    """[单查询]两阶段检索：向量粗筛 → 重排序精排 → 自适应取数
+def _retrieve(query, max_k=5, min_score=RERANK_THRESHOLD, coarse_k=20,
+              use_bm25=True):
+    """[单查询]两阶段检索：混合粗筛 → 重排序精排 → 自适应取数
 
-    三个参数的分工：
-      coarse_k ：粗筛保留的候选数（要足够大，给精排留出重排空间）
+    四个参数的分工：
+      coarse_k ：每一路粗筛各保留几个候选（要足够大，给精排留出重排空间）
+      use_bm25 ：粗筛要不要带上 BM25（稀疏检索）
       min_score：相关性门槛（低于它视为不相关）
       max_k    ：最多取几段
 
     ⚠️ 注意 max_k 的语义：不是「必须取 5 段」，而是「最多 5 段」。
        实际取几段由 min_score 决定 —— 相关几段就取几段。
-    """
-    # ① 阶段1：向量检索粗筛（多取候选，不要在这里就把范围切死）
-    qv = model.encode(query, normalize_embeddings=True)
-    scores = embeddings @ qv
-    idx = scores.argsort()[::-1][:coarse_k]
-    candidates = [chunks[i] for i in idx]
 
-    # ② 阶段2：重排序精排（在候选集上重新打分）
+    ⭐ 粗筛用【并集】而不是【融合】—— 这是刻意的：
+        下游还有精排，而精排比任何融合方式都强。召回层唯一的目标是
+        「别丢东西」，排序交给精排就行。
+          · 融合（RRF）后取 top-N：候选数少，但【可能丢】（实测 k=2 时丢过）
+          · 向量 top-k ∪ BM25 top-k：候选数最多 2k，但【一定不丢】
+              （并集必然包含任何单路的 top-k）
+        RRF 只在「融合后直接出结果、后面没有精排」时才划算。
+
+    ⚠️ 前提：coarse_k 必须【小于语料段数】，粗筛才真的在筛。
+       如果 coarse_k >= 语料段数（比如现在 7 段而 coarse_k=20），
+       候选池就是全集，加不加 BM25 都一样 —— 实测过。
+    """
+    # ① 阶段1：混合粗筛 —— 向量 top-k 与 BM25 top-k 取并集
+    picked = []
+    seen = set()
+
+    def take(i):
+        i = int(i)
+        if i not in seen:
+            seen.add(i)
+            picked.append(i)
+
+    # 稠密：语义相似（擅长「意思相近但用词不同」）
+    qv = model.encode(query, normalize_embeddings=True)
+    vec_scores = embeddings @ qv
+    for i in vec_scores.argsort()[::-1][:coarse_k]:
+        take(i)
+
+    # 稀疏：精确词匹配（擅长专有名词、缩写、型号）
+    if use_bm25:
+        for i in bm25.ranking(query)[:coarse_k]:
+            take(i)
+
+    candidates = [chunks[i] for i in picked]
+
+    # ② 阶段2：重排序精排（在候选集上重新打分）—— 顺序由精排决定，所以粗筛顺序无所谓
     pairs = [[query, c["text"]] for c in candidates]
     rr_scores = reranker.predict(pairs)
 
