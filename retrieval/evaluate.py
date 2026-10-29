@@ -41,19 +41,25 @@ KINDS = list(dict.fromkeys(item["kind"] for item in DATA))
 # ==================== 要对比的检索策略 ====================
 # 只改这个列表就能加对照组。第一项是基线。
 #
-# 当前这一组是个 2×2：{粗筛方式} × {候选预算}。
-# 因为「加 BM25 有没有用」和「预算多大」是耦合的（见 docs/检索开发实录.md 专题 12）：
-#   · 预算 >= 语料段数 → 候选池 = 全集 → 加什么都是全集，**空操作**
-#   · 预算 < 语料段数  → 召回层真的在筛 → 这时才比得出差别
+# 当前这一组在验【第 12 课复查 gold 时冒出的假设】：
+#   多返回的那 6 段里，4 段和 gold 的分差是 0.15~0.45（明显更低）。
+#   ⇒ 阈值 0.3 太松，把它们放进来了。把阈值调到 0.9 应该能砍掉。
+#   唯一变量 = RERANK_THRESHOLD。
+#
+# ⚠️ 这同时也在验一个【已写进文档的结论】：第 4 课说「阈值救不了」
+#    （因为分数饱和，区间只有 0.0005 宽）。复查发现那个论证把
+#    不同查询的需求混在一起了 —— 它只对「分差 < 0.01」的 2 段成立。
 #
 # 历史对照组（已验完，结论见 docs/检索开发实录.md）：
-#   search(use_decompose=True) → 有效，已把 MCP 的 smart_query 默认改成 True
-#   「智能分解」文字规则        → 留出集上失败，已废弃，代码也删掉了
+#   预算 20 / 3 × 纯向量 / 混合  → 最终结果 0/19 变化，瓶颈在精排层不在召回层
+#   search(use_decompose=True)   → 有效，MCP 的 smart_query 默认已改成 True
+#   「智能分解」文字规则          → 留出集上失败，已废弃，代码也删掉了
 RETRIEVERS = [
-    ("预算 20 · 纯向量（旧的默认）", lambda q: R._retrieve(q, use_bm25=False)),
-    ("预算 20 · 混合（∪BM25）", lambda q: R._retrieve(q, use_bm25=True)),
-    ("预算 3 · 纯向量", lambda q: R._retrieve(q, use_bm25=False, coarse_k=3)),
-    ("预算 3 · 混合（∪BM25）", lambda q: R._retrieve(q, use_bm25=True, coarse_k=3)),
+    ("改前：阈值 0.3", lambda q: R._retrieve(q, min_score=0.3)),
+    ("改后：阈值 0.9", lambda q: R._retrieve(q, min_score=0.9)),
+    # 回归检查：生产默认（不传 min_score）必须和「改后」完全一致，
+    # 否则说明某个调用点还在用旧值。
+    ("生产默认（不传参）", lambda q: R._retrieve(q)),
 ]
 
 
