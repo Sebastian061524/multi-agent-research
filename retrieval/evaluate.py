@@ -31,6 +31,9 @@ else:
     from retrieval.eval_set import EVAL_SET as DATA
     DATA_NAME = "训练集 eval_set（可反复调优）"
 
+# gold 的锚点：原文字符区间（与切块无关）。两个集都是按同一份 7 段标的，所以共用。
+from retrieval.eval_set import CHUNK_SPANS
+
 # _retrieve 返回的是段落 dict，而指标需要「下标」才能比。
 # 用文本内容做映射 —— 语料里每段文本都是唯一的。
 IDX_OF = {c["text"]: i for i, c in enumerate(R.chunks)}
@@ -64,33 +67,64 @@ RETRIEVERS = [
 
 
 # ==================== 打分 ====================
+#
+# ⭐ 匹配方式：比【原文区间】，不比【段落下标】。
+#
+#   为什么：段落下标是切块的产物 —— 换一种切法（改大小 / 加 overlap / 按标题切），
+#   段数就变、下标全变，gold 立即失效，尺子只能量「现在这一种切法」。
+#   gold 的锚点固定成 eval_set.CHUNK_SPANS（原文字符区间），就与切块解耦了。
+#
+#   判定「命中」的规则：返回的段落覆盖了 gold 区间的 **50%** 以上。
+#   · 切块变小（gold 被切成两半）：任意一半覆盖 ≥50% 就算命中 ✅
+#   · 切块变大（两段合成一段）：那一段同时覆盖两个 gold 区间 → 两个都算命中 ✅
+#   · 50% 这个数是【判定标准】，不是物理常数 —— 改它等于改尺子，会影响 precision。
 
-def to_indices(docs):
-    """把检索返回的段落 dict 翻译成【下标列表】（保持顺序）"""
-    return [IDX_OF[d["text"]] for d in docs]
+COVER_RATIO = 0.5
 
 
-def score_one(got, gold):
+def _span_of(doc):
+    """取一个返回段落的原文区间"""
+    return (doc["start"], doc["end"])
+
+
+def _covers(got_span, gold_span, ratio=COVER_RATIO):
+    """返回段落是否覆盖了 gold 区间（按 gold 区间的比例算）"""
+    gs, ge = gold_span
+    s, e = got_span
+    overlap = max(0, min(e, ge) - max(s, gs))
+    width = ge - gs
+    return width > 0 and overlap / width >= ratio
+
+
+def score_one(got_spans, gold_idx):
     """算一条查询的指标。
 
-    recall    ：命中的 gold 数 / gold 总数     （该找到的，找到了几成）
-    precision ：命中的 gold 数 / 返回的段数     （返回的，有几成是对的）
-    rr        ：1 / 第一个正确段落的排名       （排得靠不靠前）
+    got_spans ：实际返回的段落，每个的 (start, end)
+    gold_idx  ：标准答案的段落下标（用 CHUNK_SPANS 换成原文字符区间）
+
+    recall    ：被覆盖到的 gold 区间数 / gold 总数
+    precision ：返回的段落里，有几段至少覆盖了一个 gold 区间
+    rr        ：1 / 第一个「有用的」返回段落的排名
     abstained ：该拒答的查询，返回是否为空
     """
-    gold = set(gold)
-
-    if not gold:
+    if not gold_idx:
         # 应该拒答的查询：返回空 = 判对了
         return {"recall": None, "precision": None, "rr": None,
-                "abstained": len(got) == 0}
+                "abstained": len(got_spans) == 0}
 
-    hit = set(got) & gold
-    recall = len(hit) / len(gold)
+    gold_spans = [CHUNK_SPANS[i] for i in gold_idx]
+
+    # 每个返回段落是否「有用」
+    useful = [any(_covers(sp, g) for g in gold_spans) for sp in got_spans]
+
+    # 每个 gold 区间是否被某个返回段落覆盖到
+    hit = sum(1 for g in gold_spans if any(_covers(sp, g) for sp in got_spans))
+
+    recall = hit / len(gold_spans)
     # 什么都没返回时 precision 记为 1.0（没有噪音）——
     # 「什么都没给」由 recall 去反映，两个指标各管一头。
-    precision = len(hit) / len(got) if got else 1.0
-    ranks = [i + 1 for i, g in enumerate(got) if g in gold]
+    precision = sum(useful) / len(got_spans) if got_spans else 1.0
+    ranks = [i + 1 for i, ok in enumerate(useful) if ok]
     rr = 1 / ranks[0] if ranks else 0.0
     return {"recall": recall, "precision": precision, "rr": rr, "abstained": None}
 
@@ -99,8 +133,11 @@ def run_strategy(fn):
     """把评测集完整跑一遍，返回每条一行的结果"""
     rows = []
     for item in DATA:
-        got = to_indices(fn(item["query"]))
-        rows.append({"item": item, "got": got, **score_one(got, item["gold"])})
+        docs = fn(item["query"])
+        got_spans = [_span_of(d) for d in docs]
+        got = [IDX_OF.get(d["text"], -1) for d in docs]   # 只用于打印
+        rows.append({"item": item, "got": got, "spans": got_spans,
+                     **score_one(got_spans, item["gold"])})
     return rows
 
 

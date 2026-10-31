@@ -62,15 +62,31 @@ print("加载重排序模型...")
 reranker = CrossEncoder("BAAI/bge-reranker-base", local_files_only=True)
 
 # 加载文档
+#
+# 每段除了 text，还记下它在【原文里的字符区间】 start / end。
+# 为什么需要它：
+#   ① 诊断时要知道「这一段是从原文哪一块切出来的」
+#   ② ⭐ 评测集的 gold 锚定在「原文区间」上，而不是「段落下标」上 ——
+#      这样换一种切块方式，尺子依然有效（见 retrieval/evaluate.py 的 overlap 匹配）
+#   ③ 以后要做「向相邻段落扩展上下文」时，区间是唯一的依据
 chunks = []
 for pattern in [f"{DOCS_DIR}/**/*.txt", f"{DOCS_DIR}/**/*.md"]:
     for path in glob.glob(pattern, recursive=True):
         with open(path, encoding="utf-8") as f:
             text = f.read()
-        for para in text.split("\n\n"):
-            para = para.strip()
+        offset = 0
+        for raw in text.split("\n\n"):
+            start = offset
+            offset += len(raw) + 2          # +2 是那个双换行本身
+            lead = len(raw) - len(raw.lstrip())
+            para = raw.strip()
             if len(para) > 20:
-                chunks.append({"source": os.path.basename(path), "text": para})
+                chunks.append({
+                    "source": os.path.basename(path),
+                    "text": para,
+                    "start": start + lead,
+                    "end": start + lead + len(para),
+                })
 
 if not chunks:
     raise SystemExit(f"❌ 在 {DOCS_DIR} 里没有找到可用资料（需要至少一段超过 20 字的文本）")
